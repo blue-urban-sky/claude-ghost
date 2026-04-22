@@ -2,7 +2,7 @@
   "name": "claude-ghost",
   "displayName": "Claude Ghost",
   "description": "Inline ghost-text completions powered by the local Claude CLI.",
-  "version": "0.0.26",
+  "version": "1.0.0",
   "publisher": "sam-lyon",
   "license": "MIT",
   "repository": {
