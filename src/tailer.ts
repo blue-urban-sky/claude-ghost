@@ -110,13 +110,25 @@ interface ContentBlock {
   thinking?: string;
 }
 
+interface JsonlEntry {
+  type?: string;
+  subtype?: string;
+  message?: { content?: unknown };
+}
+
+function isJsonlEntry(v: unknown): v is JsonlEntry {
+  return typeof v === "object" && v !== null;
+}
+
 export function formatJsonlLine(line: string): string | null {
-  let msg: { type?: string; subtype?: string; message?: { content?: unknown }; [k: string]: unknown };
+  let parsed: unknown;
   try {
-    msg = JSON.parse(line);
+    parsed = JSON.parse(line);
   } catch {
     return null;
   }
+  if (!isJsonlEntry(parsed)) return null;
+  const msg = parsed;
   const t = msg.type;
   if (t === "user") {
     const raw = extractText(msg.message?.content);

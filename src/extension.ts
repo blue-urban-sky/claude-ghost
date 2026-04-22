@@ -33,9 +33,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const sessions = createSessionManager(logger, () => {
     logging.scheduleAutoTail(() => sessions.current());
   });
-  sessions.onStateChange((s) => statusBar.update(s as Parameters<typeof statusBar.update>[0]));
+  sessions.onStateChange((s) => statusBar.update(s));
 
-  const provider = new ClaudeGhostProvider(() => sessions.current(), (msg) => logger.log(msg));
+  const onPendingCleared = (reason: string): void => {
+    logger.log(`declined (${reason})`);
+    logger.sessionAppend(`\n── DECLINED (${reason}) ──`);
+  };
+
+  const provider = new ClaudeGhostProvider(
+    () => sessions.current(),
+    (msg) => logger.log(msg),
+    onPendingCleared,
+  );
 
   // Multi-root + remote schemes: support files on local disk, remote
   // workspaces (SSH/WSL/codespaces), and untitled buffers.
@@ -52,18 +61,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   registerCommands(context, provider, sessions, logging, logger);
-
-  provider.onPendingCleared = (reason: string) => {
-    logger.log(`declined (${reason})`);
-    logger.sessionAppend(`\n── DECLINED (${reason}) ──`);
-  };
-
-  const declinePending = (reason: string) => {
-    if (!provider.pending) return;
-    provider.pending = null;
-    logger.log(`declined (${reason})`);
-    logger.sessionAppend(`\n── DECLINED (${reason}) ──`);
-  };
 
   // Auto-trigger via a debounced timer is kept as a fallback for users on
   // older VS Code. Provider will also accept Automatic trigger kind now.
@@ -84,7 +81,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (autoTriggerTimer) clearTimeout(autoTriggerTimer);
     autoTriggerTimer = setTimeout(() => {
       autoTriggerTimer = null;
-      if (provider.pending) return;
+      if (provider.hasPending) return;
       const session = sessions.current();
       if (!session || session.state !== "ready") return;
       const editor = vscode.window.activeTextEditor;
@@ -101,40 +98,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           scheduleAutoTrigger();
         }
       }
-      const pending = provider.pending;
-      if (!pending || event.document !== pending.document) return;
-      if (event.contentChanges.length === 0) return;
-      const change = event.contentChanges[0];
-      const changeOffset = change.rangeOffset;
-      if (changeOffset !== pending.offset) {
-        declinePending("edited elsewhere");
-        return;
-      }
-      if (change.text.length === 0) {
-        declinePending("deleted at cursor");
-        return;
-      }
-      if (!pending.remaining.startsWith(change.text)) {
-        declinePending("typed non-matching text");
-        return;
-      }
-      const accepted = change.text;
-      const remaining = pending.remaining.slice(accepted.length);
-      const kind = remaining.length === 0 ? "accepted" : "partially accepted";
+      const result = provider.handleDocumentChange(event);
+      if (!result) return;
+      const { accepted, full } = result;
+      const kind = full ? "accepted" : "partially accepted";
       const preview = accepted.slice(0, 200).replace(/\n/g, "\\n");
       logger.log(`${kind} (${accepted.length} chars) preview=${JSON.stringify(preview)}`);
       logger.sessionAppend(
-        `\n── ${kind === "accepted" ? "ACCEPTED" : "ACCEPTED (partial)"} ──\n${accepted}`,
+        `\n── ${full ? "ACCEPTED" : "ACCEPTED (partial)"} ──\n${accepted}`,
       );
-      if (remaining.length === 0) {
-        provider.pending = null;
-      } else {
-        provider.pending = {
-          document: pending.document,
-          offset: pending.offset + accepted.length,
-          remaining,
-        };
-      }
     }),
   );
 
@@ -157,25 +129,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       cancelAutoTrigger();
-      const pending = provider.pending;
-      if (!pending) return;
-      if (!editor || editor.document !== pending.document) {
-        declinePending("switched file");
+      if (!provider.hasPending) return;
+      if (!editor || !provider.pendingMatchesDocument(editor.document)) {
+        provider.clearPending("switched file");
       }
     }),
   );
 
   context.subscriptions.push(
     vscode.window.onDidChangeTextEditorSelection((event) => {
-      const pending = provider.pending;
-      if (!pending) return;
       // Only react to selection changes in the pending document; ignore
       // peek views, diff editors, output panels, etc.
-      if (event.textEditor.document !== pending.document) return;
-      const offset = pending.document.offsetAt(event.selections[0].active);
-      if (offset !== pending.offset) {
-        declinePending("cursor moved");
-      }
+      if (!provider.pendingMatchesDocument(event.textEditor.document)) return;
+      const offset = event.textEditor.document.offsetAt(event.selections[0].active);
+      provider.handleSelectionMovedTo(event.textEditor.document, offset);
     }),
   );
 

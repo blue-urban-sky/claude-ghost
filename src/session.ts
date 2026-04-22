@@ -1,7 +1,9 @@
 import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import * as readline from "node:readline";
+import { createInterface, type Interface } from "node:readline";
+
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ClaudeSessionOptions {
   model?: string;
@@ -13,7 +15,7 @@ export interface ClaudeSessionOptions {
   bare?: boolean;
   // --effort: low|medium|high|xhigh|max. Only reduces thinking budget;
   // does NOT disable thinking. Use disableThinking for that.
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  effort?: EffortLevel;
   // Sets CLAUDE_CODE_DISABLE_THINKING=1 on the child process, overriding the
   // global settings.json `alwaysThinkingEnabled`. Essential for inline
   // completion latency.
@@ -47,7 +49,7 @@ export type StreamEvent =
         | "message_stop"
         | "content_block_start"
         | "content_block_stop"
-        | string;
+        | (string & {});
       [k: string]: unknown;
     };
 
@@ -90,12 +92,17 @@ export function isResult(
   return m.type === "result";
 }
 
+type ContentBlockDelta = Extract<StreamEvent, { type: "content_block_delta" }>;
+
+function isContentBlockDelta(evt: StreamEvent): evt is ContentBlockDelta {
+  return evt.type === "content_block_delta";
+}
+
 export function isTextDelta(
   evt: StreamEvent | undefined,
-): evt is { type: "content_block_delta"; delta: { type: "text_delta"; text: string } } {
-  if (!evt) return false;
-  if (evt.type !== "content_block_delta") return false;
-  const delta = (evt as { delta?: { type?: string; text?: unknown } }).delta;
+): evt is ContentBlockDelta & { delta: { type: "text_delta"; text: string } } {
+  if (!evt || !isContentBlockDelta(evt)) return false;
+  const { delta } = evt;
   return !!delta && delta.type === "text_delta" && typeof delta.text === "string";
 }
 
@@ -114,12 +121,12 @@ interface PendingControl {
 }
 
 export class ClaudeSession {
-  sessionId: string;
+  #sessionId: string;
   private _state: SessionState = "idle";
   private readonly emitter = new EventEmitter();
   private readonly opts: ClaudeSessionOptions;
   private child: ChildProcessWithoutNullStreams | null = null;
-  private rl: readline.Interface | null = null;
+  private rl: Interface | null = null;
   private stderrBuf: string[] = [];
   private pending: PendingCompletion | null = null;
   private pendingControls = new Map<string, PendingControl>();
@@ -128,8 +135,12 @@ export class ClaudeSession {
   private lifecycleInFlight: Promise<void> | null = null;
 
   constructor(opts: ClaudeSessionOptions = {}) {
-    this.sessionId = randomUUID();
+    this.#sessionId = randomUUID();
     this.opts = opts;
+  }
+
+  get sessionId(): string {
+    return this.#sessionId;
   }
 
   get state(): SessionState {
@@ -139,13 +150,13 @@ export class ClaudeSession {
   on(event: "state", listener: (s: SessionState) => void): void;
   on(event: "error", listener: (err: Error) => void): void;
   on(event: "stderr", listener: (chunk: string) => void): void;
-  on(event: "stdout-line", listener: (msg: Record<string, unknown>) => void): void;
-  on(event: string, listener: (...args: any[]) => void): void {
-    this.emitter.on(event, listener);
+  on(event: "stdout-line", listener: (msg: CliMessage) => void): void;
+  on(event: string, listener: (...args: never) => void): void {
+    this.emitter.on(event, listener as (...args: unknown[]) => void);
   }
 
-  off(event: string, listener: (...args: any[]) => void): void {
-    this.emitter.off(event, listener);
+  off(event: string, listener: (...args: never) => void): void {
+    this.emitter.off(event, listener as (...args: unknown[]) => void);
   }
 
   private setState(s: SessionState): void {
@@ -199,7 +210,7 @@ export class ClaudeSession {
       "--verbose",
       `--model=${model}`,
       "--session-id",
-      this.sessionId,
+      this.#sessionId,
     );
     if (this.opts.effort) {
       args.push("--effort", this.opts.effort);
@@ -247,7 +258,7 @@ export class ClaudeSession {
       this.handleExit(code, signal);
     });
 
-    const rl = readline.createInterface({ input: child.stdout });
+    const rl = createInterface({ input: child.stdout });
     this.rl = rl;
     rl.on("line", (line) => this.onLine(line));
 
@@ -321,7 +332,7 @@ export class ClaudeSession {
     }
     if (!isCliMessage(parsed)) return;
     const msg = parsed;
-    this.emitter.emit("stdout-line", msg as Record<string, unknown>);
+    this.emitter.emit("stdout-line", msg);
 
     if (isControlResponse(msg)) {
       const resp = msg.response;
@@ -441,7 +452,12 @@ export class ClaudeSession {
       throw new Error("child process not writable");
     }
 
-    const queue: Array<{ chunk?: string; done?: boolean; err?: Error }> = [];
+    type QueueItem =
+      | { kind: "chunk"; chunk: string }
+      | { kind: "done" }
+      | { kind: "err"; err: Error };
+
+    const queue: QueueItem[] = [];
     let queueBytes = 0;
     let waiter: ((v: IteratorResult<string>) => void) | null = null;
     let waiterReject: ((err: Error) => void) | null = null;
@@ -469,10 +485,10 @@ export class ClaudeSession {
         queueBytes += Buffer.byteLength(chunk, "utf8");
         if (queueBytes > COMPLETION_QUEUE_MAX_BYTES) {
           const err = failOverflow();
-          queue.push({ err });
+          queue.push({ kind: "err", err });
           return;
         }
-        queue.push({ chunk });
+        queue.push({ kind: "chunk", chunk });
       },
       end: () => {
         if (waiter) {
@@ -481,7 +497,7 @@ export class ClaudeSession {
           waiterReject = null;
           w({ value: undefined, done: true });
         } else {
-          queue.push({ done: true });
+          queue.push({ kind: "done" });
         }
       },
       fail: (err: Error) => {
@@ -491,7 +507,7 @@ export class ClaudeSession {
           waiterReject = null;
           wr(err);
         } else {
-          queue.push({ err });
+          queue.push({ kind: "err", err });
         }
       },
       interrupted: false,
@@ -514,12 +530,17 @@ export class ClaudeSession {
 
     const iter: AsyncIterator<string> = {
       next: (): Promise<IteratorResult<string>> => {
-        if (queue.length > 0) {
-          const item = queue.shift()!;
-          if (item.err) return Promise.reject(item.err);
-          if (item.done) return Promise.resolve({ value: undefined, done: true });
-          queueBytes -= Buffer.byteLength(item.chunk!, "utf8");
-          return Promise.resolve({ value: item.chunk!, done: false });
+        const item = queue.shift();
+        if (item) {
+          switch (item.kind) {
+            case "err":
+              return Promise.reject(item.err);
+            case "done":
+              return Promise.resolve({ value: undefined, done: true });
+            case "chunk":
+              queueBytes -= Buffer.byteLength(item.chunk, "utf8");
+              return Promise.resolve({ value: item.chunk, done: false });
+          }
         }
         return new Promise((resolve, reject) => {
           waiter = resolve;
@@ -646,7 +667,7 @@ export class ClaudeSession {
       this.pending = null;
     }
     await this.doStop();
-    this.sessionId = randomUUID();
+    this.#sessionId = randomUUID();
     this._state = "idle";
     this.stderrBuf = [];
     this.lastError = null;

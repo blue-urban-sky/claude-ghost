@@ -6,6 +6,7 @@ import {
   isStreamEvent,
   isResult,
   isTextDelta,
+  type StreamEvent,
 } from "../session";
 
 test("isCliMessage rejects non-objects", () => {
@@ -20,29 +21,34 @@ test("isCliMessage accepts object with string type", () => {
 });
 
 test("isControlResponse narrows", () => {
-  const m = { type: "control_response", response: { request_id: "x", subtype: "success" } };
+  const m: unknown = { type: "control_response", response: { request_id: "x", subtype: "success" } };
   assert.equal(isCliMessage(m), true);
-  assert.equal(isControlResponse(m as any), true);
+  if (!isCliMessage(m)) throw new Error("unreachable");
+  assert.equal(isControlResponse(m), true);
 });
 
 test("isStreamEvent narrows", () => {
-  const m = { type: "stream_event", event: { type: "message_start" } };
-  assert.equal(isStreamEvent(m as any), true);
+  const m: unknown = { type: "stream_event", event: { type: "message_start" } };
+  assert.equal(isCliMessage(m), true);
+  if (!isCliMessage(m)) throw new Error("unreachable");
+  assert.equal(isStreamEvent(m), true);
 });
 
 test("isResult narrows", () => {
-  const m = { type: "result" };
-  assert.equal(isResult(m as any), true);
+  const m: unknown = { type: "result" };
+  assert.equal(isCliMessage(m), true);
+  if (!isCliMessage(m)) throw new Error("unreachable");
+  assert.equal(isResult(m), true);
 });
 
 test("isTextDelta: valid content_block_delta with text_delta", () => {
-  const evt = { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } };
-  assert.equal(isTextDelta(evt as any), true);
+  const evt: StreamEvent = { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } };
+  assert.equal(isTextDelta(evt), true);
 });
 
 test("isTextDelta rejects non-text deltas", () => {
-  const evt = { type: "content_block_delta", delta: { type: "input_json_delta" } };
-  assert.equal(isTextDelta(evt as any), false);
+  const evt: StreamEvent = { type: "content_block_delta", delta: { type: "input_json_delta" } };
+  assert.equal(isTextDelta(evt), false);
 });
 
 test("isTextDelta rejects undefined", () => {

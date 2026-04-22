@@ -1,5 +1,12 @@
 import * as vscode from "vscode";
-import { ClaudeSession } from "./session";
+import {
+  ClaudeSession,
+  isStreamEvent,
+  isTextDelta,
+  type CliMessage,
+  type EffortLevel,
+  type SessionState,
+} from "./session";
 import { SYSTEM_PROMPT, MAXIMALIST_SYSTEM_PROMPT } from "./prompt";
 import {
   CFG,
@@ -11,8 +18,6 @@ import type { Logger } from "./log";
 import { errorMessage } from "./log";
 import { preferredWorkspaceFolderFsPath } from "./paths";
 
-type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
-
 export interface SessionManager {
   current(): ClaudeSession | null;
   maximalist(): ClaudeSession | null;
@@ -22,7 +27,7 @@ export interface SessionManager {
   ensureMaximalist(fresh: boolean): Promise<ClaudeSession>;
   scheduleRestartForSettings(): void;
   dispose(): Promise<void>;
-  onStateChange(cb: (state: string) => void): vscode.Disposable;
+  onStateChange(cb: (state: SessionState) => void): vscode.Disposable;
 }
 
 export function createSessionManager(
@@ -33,11 +38,11 @@ export function createSessionManager(
   let maximalistSession: ClaudeSession | null = null;
   let settingsRestartTimer: NodeJS.Timeout | null = null;
   let restartMutex: Promise<void> | null = null;
-  const stateListeners = new Set<(state: string) => void>();
+  const stateListeners = new Set<(state: SessionState) => void>();
   // Track unexpected-crash restarts within a sliding window.
   let recentRestartAttempts: number[] = [];
 
-  const emitState = (s: string): void => {
+  const emitState = (s: SessionState): void => {
     for (const l of stateListeners) {
       try {
         l(s);
@@ -62,15 +67,19 @@ export function createSessionManager(
       logger.log(`${label} stderr: ${chunk.trim()}`);
     });
     if (label === "primary") {
-      s.on("stdout-line", (msg: Record<string, unknown>) => {
-        const type = String(msg.type ?? "?");
-        const subtype = msg.subtype ? `/${String(msg.subtype)}` : "";
+      s.on("stdout-line", (msg: CliMessage) => {
+        const type = msg.type;
+        let subtype = "";
         let extra = "";
-        if (type === "stream_event") {
-          const evt = (msg as { event?: { type?: string; delta?: { type?: string } } }).event;
-          extra = ` ${evt?.type ?? "?"}${evt?.delta?.type ? `:${evt.delta.type}` : ""}`;
-        } else if (type === "result") {
-          extra = ` is_error=${String((msg as { is_error?: unknown }).is_error)}`;
+        if (isStreamEvent(msg)) {
+          const evt = msg.event;
+          const deltaType = isTextDelta(evt) ? evt.delta.type : null;
+          extra = ` ${evt.type}${deltaType ? `:${deltaType}` : ""}`;
+        } else if (msg.type === "result") {
+          subtype = msg.subtype ? `/${msg.subtype}` : "";
+          extra = ` is_error=${String(msg.is_error)}`;
+        } else if ("subtype" in msg && typeof msg.subtype === "string") {
+          subtype = `/${msg.subtype}`;
         }
         logger.log(`<< ${type}${subtype}${extra}`);
       });

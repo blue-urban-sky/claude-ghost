@@ -22,9 +22,7 @@ export function registerCommands(
   logger: Logger,
 ): void {
   const triggerCompletion = async (opts: TriggerOpts = {}): Promise<void> => {
-    if (opts.hint !== undefined) provider.nextHint = opts.hint;
-    if (opts.maximalist) provider.nextMaximalist = true;
-    if (opts.session) provider.nextSession = opts.session;
+    provider.setNextTrigger(opts);
     await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
   };
 

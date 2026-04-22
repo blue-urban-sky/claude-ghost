@@ -4,25 +4,21 @@
 import Module from "node:module";
 import * as path from "node:path";
 
+interface PatchableModule {
+  _resolveFilename: (
+    request: string,
+    parent: NodeModule | null,
+    isMain: boolean,
+    options?: unknown,
+  ) => string;
+}
+
 const shimPath = path.resolve(__dirname, "vscodeStub.js");
+const mod = Module as unknown as PatchableModule;
 
-const originalResolve = (Module as unknown as {
-  _resolveFilename: (
-    request: string,
-    parent: NodeModule | null,
-    isMain: boolean,
-    options?: unknown,
-  ) => string;
-})._resolveFilename;
+const originalResolve = mod._resolveFilename;
 
-(Module as unknown as {
-  _resolveFilename: (
-    request: string,
-    parent: NodeModule | null,
-    isMain: boolean,
-    options?: unknown,
-  ) => string;
-})._resolveFilename = function patched(
+mod._resolveFilename = function patched(
   request: string,
   parent: NodeModule | null,
   isMain: boolean,

@@ -20,12 +20,12 @@ export const CFG = {
 
 // Settings keys that require respawning the child CLI. Changing these
 // triggers a debounced session restart.
-export const SPAWN_AFFECTING_KEYS: readonly string[] = [
-  CFG.model,
-  CFG.effort,
-  CFG.disableThinking,
-  CFG.bare,
-  CFG.claudePath,
+export const SPAWN_AFFECTING_KEYS: ReadonlyArray<keyof typeof CFG> = [
+  "model",
+  "effort",
+  "disableThinking",
+  "bare",
+  "claudePath",
 ];
 
 export const AUTO_TRIGGER_DEBOUNCE_MS_DEFAULT = 500;
