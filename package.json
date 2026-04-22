@@ -1,0 +1,188 @@
+{
+  "name": "claude-ghost",
+  "displayName": "Claude Ghost",
+  "description": "Inline ghost-text completions powered by the local Claude CLI.",
+  "version": "0.0.26",
+  "publisher": "sam-lyon",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sam-lyon/claude-ghost"
+  },
+  "bugs": {
+    "url": "https://github.com/sam-lyon/claude-ghost/issues"
+  },
+  "homepage": "https://github.com/sam-lyon/claude-ghost#readme",
+  "keywords": [
+    "claude",
+    "ai",
+    "completion",
+    "inline",
+    "ghost",
+    "copilot"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "main": "./out/extension.js",
+  "icon": "icon.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "categories": [
+    "Programming Languages",
+    "Machine Learning"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Claude Ghost spawns the local `claude` CLI; settings that control the binary path or CLI arguments are ignored in untrusted workspaces.",
+      "restrictedConfigurations": [
+        "claude-ghost.claudePath",
+        "claude-ghost.model",
+        "claude-ghost.bare",
+        "claude-ghost.effort",
+        "claude-ghost.disableThinking",
+        "claude-ghost.maximalist"
+      ]
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "claude-ghost.trigger",
+        "title": "Claude Ghost: Trigger Completion"
+      },
+      {
+        "command": "claude-ghost.restart",
+        "title": "Claude Ghost: Restart Session"
+      },
+      {
+        "command": "claude-ghost.showSession",
+        "title": "Claude Ghost: Show Session Info"
+      },
+      {
+        "command": "claude-ghost.insertLast",
+        "title": "Claude Ghost: Insert Last Completion"
+      },
+      {
+        "command": "claude-ghost.triggerWithHint",
+        "title": "Claude Ghost: Trigger With Hint"
+      },
+      {
+        "command": "claude-ghost.triggerMaximalist",
+        "title": "Claude Ghost: Trigger Maximalist (experimental)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "claude-ghost.trigger",
+        "key": "ctrl+alt+\\",
+        "mac": "cmd+shift+\\",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "claude-ghost.triggerWithHint",
+        "key": "ctrl+alt+shift+\\",
+        "mac": "cmd+shift+alt+\\",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Ghost",
+      "properties": {
+        "claude-ghost.model": {
+          "type": "string",
+          "default": "haiku",
+          "enum": [
+            "haiku",
+            "sonnet",
+            "opus"
+          ],
+          "enumDescriptions": [
+            "Latest Haiku — fastest, cheapest. Recommended for inline completion.",
+            "Latest Sonnet — balanced quality and latency.",
+            "Latest Opus — most capable, slowest, most expensive."
+          ],
+          "description": "Claude model family. Resolves to the latest model in that family. To pin a specific version, type its full ID (e.g. claude-sonnet-4-6) directly in settings.json."
+        },
+        "claude-ghost.contextLines": {
+          "type": "number",
+          "default": 100,
+          "description": "Fallback context window (lines before and after cursor) when the file exceeds contextMaxBytes."
+        },
+        "claude-ghost.contextMaxBytes": {
+          "type": "number",
+          "default": 100000,
+          "description": "Byte threshold. Files below this are sent whole; above it, only ±contextLines are sent."
+        },
+        "claude-ghost.claudePath": {
+          "type": "string",
+          "default": "claude",
+          "description": "Path to the Claude CLI binary."
+        },
+        "claude-ghost.bare": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass --bare to the Claude CLI. Reduces startup cost but requires ANTHROPIC_API_KEY or apiKeyHelper; leave false for OAuth-authenticated installs."
+        },
+        "claude-ghost.effort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "default": "low",
+          "description": "Effort level (--effort). Only reduces thinking budget; use disableThinking to skip thinking entirely."
+        },
+        "claude-ghost.disableThinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set CLAUDE_CODE_DISABLE_THINKING=1 on the Claude child process. Overrides the global settings.json `alwaysThinkingEnabled` and skips extended thinking entirely — needed for inline-completion latency."
+        },
+        "claude-ghost.maxChars": {
+          "type": "number",
+          "default": -1,
+          "description": "Maximum characters per completion. Interrupts the CLI once exceeded. Set to -1 for no cap (default)."
+        },
+        "claude-ghost.autoTrigger": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically request a completion after a pause in typing. Disabled by default — use the manual trigger keybinding instead."
+        },
+        "claude-ghost.maximalist": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable maximalist mode (experimental). Unlocks the `Claude Ghost: Trigger Maximalist` command, which reads a nearby source comment (e.g. '// create a class for managing a user crud system') and generates a complete in-file implementation with integration comments. One-file scope. Works best with model=sonnet or opus and maxChars=-1."
+        },
+        "claude-ghost.maximalistFreshSession": {
+          "type": "boolean",
+          "default": true,
+          "description": "Restart the Claude session before each maximalist trigger so prior completion turns don't bias the prompt. Adds ~2–5s of restart latency but keeps every maximalist run on a clean context."
+        },
+        "claude-ghost.autoTriggerDelayMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 50,
+          "description": "Idle-typing delay in milliseconds before an auto-trigger fires. Only used when autoTrigger is enabled."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "compile": "npm run lint && tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "tsc -p tsconfig.test.json && node --require ./out-test/test/register.js --test out-test/test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "eslint": "9.18.0",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "8.20.0"
+  }
+}
