@@ -4,6 +4,7 @@ import type { SessionManager } from "./sessionManager";
 import type { SessionLogging } from "./sessionLogging";
 import type { Logger } from "./log";
 import type { ClaudeSession } from "./session";
+import type { MetricsRecorder, MetricsSummary } from "./metrics";
 import { CFG } from "./state";
 import { errorMessage } from "./log";
 import { sessionJsonlPath, shellQuote } from "./paths";
@@ -56,6 +57,7 @@ export function registerCommands(
   sessions: SessionManager,
   logging: SessionLogging,
   logger: Logger,
+  metrics?: MetricsRecorder,
 ): void {
   const triggerCompletion = async (
     opts: TriggerOpts = {},
@@ -244,4 +246,57 @@ export function registerCommands(
       }
     }),
   );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("claude-ghost.showMetricsSummary", async () => {
+      const cfg = vscode.workspace.getConfiguration(CFG.section);
+      if (!cfg.get<boolean>(CFG.localMetrics, false)) {
+        const choice = await vscode.window.showInformationMessage(
+          "Local metrics are disabled. Enable `claude-ghost.localMetrics` in settings to start recording.",
+          "Open Settings",
+        );
+        if (choice === "Open Settings") {
+          await vscode.commands.executeCommand(
+            "workbench.action.openSettings",
+            "claude-ghost.localMetrics",
+          );
+        }
+        return;
+      }
+      if (!metrics) {
+        vscode.window.showInformationMessage("Claude Ghost: metrics recorder unavailable.");
+        return;
+      }
+      interface WindowPick extends vscode.QuickPickItem {
+        hours: number;
+      }
+      const windows: WindowPick[] = [
+        { label: "1h", hours: 1 },
+        { label: "6h", hours: 6 },
+        { label: "24h", hours: 24 },
+        { label: "7d", hours: 24 * 7 },
+      ];
+      const picked = await vscode.window.showQuickPick(windows, {
+        title: "Claude Ghost — Metrics Window",
+        placeHolder: "Pick a reporting window",
+      });
+      if (!picked) return;
+      try {
+        const summary = await metrics.summary(picked.hours);
+        vscode.window.showInformationMessage(formatMetricsSummary(picked.label, summary));
+      } catch (err) {
+        logger.showError(`metrics summary failed: ${errorMessage(err)}`);
+      }
+    }),
+  );
+}
+
+function formatMetricsSummary(label: string, s: MetricsSummary): string {
+  if (s.totalCompletions === 0) {
+    return `${label}: no completions recorded in window.`;
+  }
+  const pct = Math.round(s.acceptRate * 100);
+  const fmtMs = (n: number): string =>
+    n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`;
+  return `${label}: ${s.totalCompletions} completions, ${pct}% accepted (avg ttft ${fmtMs(s.avgTtftMs)}, p95 ${fmtMs(s.p95TtftMs)})`;
 }

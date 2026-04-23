@@ -72,6 +72,10 @@
       {
         "command": "claude-ghost.triggerMaximalist",
         "title": "Claude Ghost: Trigger Maximalist (experimental)"
+      },
+      {
+        "command": "claude-ghost.showMetricsSummary",
+        "title": "Claude Ghost: Show Metrics Summary"
       }
     ],
     "keybindings": [
@@ -168,6 +172,11 @@
           "default": 500,
           "minimum": 50,
           "description": "Idle-typing delay in milliseconds before an auto-trigger fires. Only used when autoTrigger is enabled."
+        },
+        "claude-ghost.localMetrics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt in to writing a per-completion JSONL log at ~/.claude-ghost/metrics.jsonl. No upload; for your own `jq` analysis."
         }
       }
     }

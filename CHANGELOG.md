@@ -9,6 +9,7 @@
 - In-flight dedup: identical prompts within 300 ms share the in-flight result instead of aborting and restarting.
 - ContextBuilder seam (`src/context.ts::assembleExtraContext`) — stub for now; Wave 2 populates.
 - Language-aware prompt nudges. `languageStyleFor(languageId)` returns concise style hints for ts/tsx/js/jsx/py/java/kt/go/sh/tf; unknown languages get no nudge. Nudges embedded as `<style lang="…">` between extra context and the current file.
+- Opt-in local metrics at `~/.claude-ghost/metrics.jsonl`. One JSONL line per completion with ttft, total, length, outcome. Setting `claude-ghost.localMetrics` (default off). `Claude Ghost: Show Metrics Summary` command returns windowed stats.
 
 ## [1.0.2] - 2026-04-23
 

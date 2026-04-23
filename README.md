@@ -114,6 +114,20 @@ First completion after activation may be slower due to server-side model warm-up
 
 No telemetry. No network calls from the extension itself — only `claude` talks to Anthropic's API. The session output channel and `~/.claude/projects/*.jsonl` contain the full source context you trigger on; treat them like any other log.
 
+## Local metrics
+
+Opt-in. Set `claude-ghost.localMetrics: true` to start recording a per-completion JSONL file at `~/.claude-ghost/metrics.jsonl`. Nothing is uploaded — the file is yours to `jq` against when tuning `model` / `effort`.
+
+One line per completion with this shape:
+
+```json
+{ "ts": "...", "model": "...", "effort": "...", "languageId": "...", "ttftMs": 0, "totalMs": 0, "completionLen": 0, "outcome": "accepted|partial|declined|cancelled|failed|empty", "declineReason": "optional" }
+```
+
+Run **Claude Ghost: Show Metrics Summary** from the command palette for a windowed summary (1h / 6h / 24h / 7d): total completions, accept rate, avg/p95 TTFT.
+
+The file rotates at 10 MB to `metrics.jsonl.1` (single backup; no further rotation).
+
 ## Building from source
 
 ```bash
