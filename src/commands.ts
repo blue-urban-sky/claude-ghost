@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { ClaudeGhostProvider } from "./provider";
+import type { ClaudeGhostProvider, ProviderOverrides } from "./provider";
 import type { SessionManager } from "./sessionManager";
 import type { SessionLogging } from "./sessionLogging";
 import type { Logger } from "./log";
@@ -12,6 +12,42 @@ export interface TriggerOpts {
   hint?: string;
   maximalist?: boolean;
   session?: ClaudeSession;
+  providerOverrides?: ProviderOverrides;
+  forceRegenerate?: boolean;
+}
+
+const SELECTION_HINT_MAX = 2000;
+
+export interface HintParseResult {
+  hint: string;
+  overrides: ProviderOverrides;
+  anyTokens: boolean;
+}
+
+// Parse leading `+visible|+recent|+symbols|+diff` tokens from the hint input.
+// Unknown `+tokens` are NOT recognised — they pass through as hint content
+// (mirroring the common "typo is a hint, don't silently drop it" rule).
+// Exported for testing.
+export function parseHintInput(raw: string): HintParseResult {
+  const known = new Set(["visible", "recent", "symbols", "diff"]);
+  const overrides: ProviderOverrides = {};
+  let rest = raw;
+  let anyTokens = false;
+  while (true) {
+    const m = /^\s*\+([A-Za-z]+)(\s+|$)/.exec(rest);
+    if (!m) break;
+    const name = m[1].toLowerCase();
+    if (!known.has(name)) break;
+    anyTokens = true;
+    switch (name) {
+      case "visible": overrides.visible = true; break;
+      case "recent": overrides.recent = true; break;
+      case "symbols": overrides.symbols = true; break;
+      case "diff": overrides.diff = true; break;
+    }
+    rest = rest.slice(m[0].length);
+  }
+  return { hint: rest.trim(), overrides, anyTokens };
 }
 
 export function registerCommands(
@@ -21,7 +57,25 @@ export function registerCommands(
   logging: SessionLogging,
   logger: Logger,
 ): void {
-  const triggerCompletion = async (opts: TriggerOpts = {}): Promise<void> => {
+  const triggerCompletion = async (
+    opts: TriggerOpts = {},
+    source: "plain" | "hint" | "maximalist" = "plain",
+  ): Promise<void> => {
+    // Selection-as-hint: only the plain trigger, only when no explicit hint
+    // was provided. Keeps the hint keybind and the maximalist command
+    // untouched, and respects a user-supplied hint verbatim.
+    if (source === "plain" && opts.hint === undefined) {
+      const editor = vscode.window.activeTextEditor;
+      const selection = editor?.selection;
+      if (editor && selection && !selection.isEmpty) {
+        const raw = editor.document.getText(selection);
+        const truncated = raw.length > SELECTION_HINT_MAX
+          ? raw.slice(0, SELECTION_HINT_MAX) + " …(truncated)"
+          : raw;
+        opts = { ...opts, hint: `complete or rewrite: ${truncated}` };
+        logger.log(`selection-as-hint (${raw.length} chars)`);
+      }
+    }
     provider.setNextTrigger(opts);
     await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
   };
@@ -43,7 +97,7 @@ export function registerCommands(
         const ms = await sessions.ensureMaximalist(
           cfg.get<boolean>(CFG.maximalistFreshSession, true),
         );
-        await triggerCompletion({ maximalist: true, session: ms });
+        await triggerCompletion({ maximalist: true, session: ms }, "maximalist");
       } catch (err) {
         logger.log(`maximalist session failed: ${errorMessage(err)}`);
         logger.showError(`maximalist session failed — ${errorMessage(err)}`);
@@ -53,13 +107,32 @@ export function registerCommands(
 
   context.subscriptions.push(
     vscode.commands.registerCommand("claude-ghost.triggerWithHint", async () => {
-      const hint = await vscode.window.showInputBox({
-        prompt: "Hint for the next completion",
+      const raw = await vscode.window.showInputBox({
+        prompt: "Hint for the next completion (prefix with +visible / +recent / +symbols / +diff to opt-in Wave-2 providers for this call)",
         placeHolder: "e.g. use async/await, return early on null, make it recursive",
         ignoreFocusOut: true,
       });
-      if (hint === undefined) return;
-      await triggerCompletion({ hint });
+      if (raw === undefined) return;
+      const parsed = parseHintInput(raw);
+      if (parsed.anyTokens) {
+        const enabled: string[] = [];
+        if (parsed.overrides.visible) enabled.push("visible");
+        if (parsed.overrides.recent) enabled.push("recent");
+        if (parsed.overrides.symbols) enabled.push("symbols");
+        if (parsed.overrides.diff) enabled.push("diff");
+        const hintForLog = parsed.hint.length > 0 ? parsed.hint : null;
+        logger.log(`hint overrides (providers=[${enabled.join(",")}], hint=${hintForLog !== null ? JSON.stringify(hintForLog) : "\"-\""})`);
+        await triggerCompletion(
+          {
+            hint: parsed.hint.length > 0 ? parsed.hint : undefined,
+            providerOverrides: parsed.overrides,
+          },
+          "hint",
+        );
+        return;
+      }
+      // No tokens — preserve the pre-existing UX: empty hint is still passed.
+      await triggerCompletion({ hint: raw }, "hint");
     }),
   );
 
@@ -80,6 +153,19 @@ export function registerCommands(
 
   context.subscriptions.push(
     vscode.commands.registerCommand("claude-ghost.trigger", async () => {
+      // Regenerate path: if a ghost is already visible, re-roll with a
+      // "different approach" hint instead of firing selection-as-hint. Skips
+      // in-flight dedup via forceRegenerate.
+      if (provider.hasPending) {
+        const prevLen = provider.lastCompletion?.length ?? "n/a";
+        logger.log(`regenerate (previous.len=${prevLen})`);
+        provider.setNextTrigger({
+          hint: "generate a different approach than the previous suggestion",
+          forceRegenerate: true,
+        });
+        await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+        return;
+      }
       await triggerCompletion();
     }),
   );

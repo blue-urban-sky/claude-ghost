@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Selection-as-hint: selecting text before `Claude Ghost: Trigger Completion` biases the completion without touching the hint keybind.
+- Regenerate: triggering the completion keybind while a ghost is already visible re-rolls with a "different approach" hint. No new keybind.
+- Hint prefix tokens: the `Trigger With Hint` input accepts `+visible` / `+recent` / `+symbols` / `+diff` prefixes to opt-in to Wave-2 context providers for one call.
+- In-flight dedup: identical prompts within 300 ms share the in-flight result instead of aborting and restarting.
+
 ## [1.0.2] - 2026-04-23
 
 ### Fixed
