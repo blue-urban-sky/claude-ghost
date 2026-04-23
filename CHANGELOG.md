@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.3] - 2026-04-23
+
+### Fixed
+- Multi-line selection-as-hint now renders. v1.1.1 set `InlineCompletionItem.range` to the full selection range — but VS Code's API requires that range to begin and end on the same line as `position`. Multi-line ranges were silently rejected (the v1.0.1 watchdog caught it: `pending is still installed with no lifecycle event`). Fix: single-line selections keep the direct range-replace. Multi-line selections now use a point range at the cursor (renders cleanly) and attach an `InlineCompletionItem.command` that deletes the original selection via `workspace.applyEdit` immediately after VS Code inserts the completion. End state is identical to a true replace, without the API constraint. New internal command `claude-ghost._deleteRange` handles the post-accept delete.
+- Return-log now distinguishes `mode=selection-replace` vs `mode=selection-replace-multiline` vs `mode=overlap`, and includes the `deleteAfterAccept=` range when applicable.
+
 ## [1.1.2] - 2026-04-23
 
 ### Added

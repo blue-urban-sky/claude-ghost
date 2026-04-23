@@ -171,6 +171,28 @@ export function registerCommands(
     }),
   );
 
+  // Internal command fired by `InlineCompletionItem.command` after VS Code
+  // inserts a multi-line selection-replace completion. Deletes the ORIGINAL
+  // selection range (in pre-insert coords — safe because the insertion
+  // happened at the tail of the selection range, so the range is still
+  // valid in the post-insert document).
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "claude-ghost._deleteRange",
+      async (uriStr: string, sl: number, sc: number, el: number, ec: number) => {
+        try {
+          const uri = vscode.Uri.parse(uriStr);
+          const edit = new vscode.WorkspaceEdit();
+          edit.delete(uri, new vscode.Range(sl, sc, el, ec));
+          const ok = await vscode.workspace.applyEdit(edit);
+          logger.log(`_deleteRange applied=${ok} range=[${sl}:${sc}..${el}:${ec}]`);
+        } catch (err) {
+          logger.log(`_deleteRange failed: ${errorMessage(err)}`);
+        }
+      },
+    ),
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand("claude-ghost.trigger", async () => {
       // Regenerate path: if a ghost is already visible, re-roll with a

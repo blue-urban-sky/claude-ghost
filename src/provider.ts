@@ -591,27 +591,40 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       );
     }
     this.#lastCompletion = cleaned;
-    // Range sizing falls into two modes:
-    //   1. Selection-as-hint: the user had text selected at trigger time. The
-    //      caller collapsed the editor's selection (so Tab doesn't indent) and
-    //      passed the original range here. We use that as the replacement
-    //      range so accepting REPLACES the selection wholesale.
-    //   2. Normal cursor trigger: size the replacement to exactly cover the
-    //      overlap (if any) between the tail of `cleaned` and the head of
-    //      `afterNow`. With 0 overlap the range is empty (pure insertion),
-    //      which is what mid-line completions need to render at all.
+    // Range sizing falls into three modes:
+    //   1. Selection-replace single-line: user had text selected, all on one
+    //      line. VS Code's inline-suggest allows range.end.line to equal
+    //      position.line, so we set the range directly and accept replaces
+    //      the selection wholesale.
+    //   2. Selection-replace multi-line: VS Code's API requires the range to
+    //      be single-line (see InlineCompletionItem.range docs). A multi-line
+    //      range is silently rejected — nothing renders. Workaround: shrink
+    //      the range to a point at the cursor (renders cleanly), and attach
+    //      a command that deletes the original selection AFTER the insert.
+    //   3. Normal cursor trigger: size to the overlap (if any) between the
+    //      tail of `cleaned` and the head of `afterNow`. 0 overlap → empty
+    //      range (pure insertion), needed for mid-line completions to render.
     let range: vscode.Range;
     let overlap = 0;
     let pendingOffset: number;
-    if (selectionRange) {
+    let mode: "selection-replace" | "selection-replace-multiline" | "overlap";
+    let deleteAfterAccept: vscode.Range | null = null;
+    if (selectionRange && selectionRange.start.line === selectionRange.end.line) {
       range = selectionRange;
       pendingOffset = document.offsetAt(selectionRange.start);
+      mode = "selection-replace";
+    } else if (selectionRange) {
+      range = new vscode.Range(position, position);
+      pendingOffset = document.offsetAt(position);
+      mode = "selection-replace-multiline";
+      deleteAfterAccept = selectionRange;
     } else {
       overlap = completionOverlap(cleaned, afterNow);
       const rangeEndOffset = document.offsetAt(position) + overlap;
       const rangeEnd = document.positionAt(rangeEndOffset);
       range = new vscode.Range(position, rangeEnd);
       pendingOffset = document.offsetAt(position);
+      mode = "overlap";
     }
     this.#pending = {
       document,
@@ -622,7 +635,7 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     const mySerial = ++this.#pendingSerial;
 
     this.#log(
-      `returning 1 inline completion item (cleaned.length=${cleaned.length}, range=[${range.start.line}:${range.start.character}..${range.end.line}:${range.end.character}], mode=${selectionRange ? "selection-replace" : "overlap"}, overlapChars=${overlap}, afterNow.len=${afterNow.length})`,
+      `returning 1 inline completion item (cleaned.length=${cleaned.length}, range=[${range.start.line}:${range.start.character}..${range.end.line}:${range.end.character}], mode=${mode}, overlapChars=${overlap}, afterNow.len=${afterNow.length}${deleteAfterAccept ? `, deleteAfterAccept=[${deleteAfterAccept.start.line}:${deleteAfterAccept.start.character}..${deleteAfterAccept.end.line}:${deleteAfterAccept.end.character}]` : ""})`,
     );
 
     const returnMeta = metaBuilder(cleaned.length);
@@ -641,6 +654,26 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       );
     }, 3000);
 
-    return [new vscode.InlineCompletionItem(cleaned, range)];
+    const item = new vscode.InlineCompletionItem(cleaned, range);
+    if (deleteAfterAccept) {
+      // VS Code fires this command right after inserting the completion.
+      // The inserted text lives at `position..position+cleaned.length`;
+      // `deleteAfterAccept` is still in original coords and refers to the
+      // text BEFORE the insertion point, so deleting it leaves our
+      // completion intact. The command is an internal API, registered in
+      // src/commands.ts as `claude-ghost._deleteRange`.
+      item.command = {
+        command: "claude-ghost._deleteRange",
+        title: "Replace original selection",
+        arguments: [
+          document.uri.toString(),
+          deleteAfterAccept.start.line,
+          deleteAfterAccept.start.character,
+          deleteAfterAccept.end.line,
+          deleteAfterAccept.end.character,
+        ],
+      };
+    }
+    return [item];
   }
 }
