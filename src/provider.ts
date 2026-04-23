@@ -6,6 +6,7 @@ import {
   completionOverlap,
   findNearbyComment,
 } from "./prompt";
+import { assembleExtraContext } from "./context";
 import { CFG } from "./state";
 
 type Log = (msg: string) => void;
@@ -240,14 +241,21 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
         this.#log(`maximalist task: ${JSON.stringify(task)}`);
       }
     }
+    const extraContext = assembleExtraContext(document, position, cfg);
     const prompt = buildPrompt(document, position, {
       contextMaxBytes: cfg.get<number>(CFG.contextMaxBytes, 100000),
       contextLines: cfg.get<number>(CFG.contextLines, 100),
       hint: hint ?? undefined,
       maximalist,
+      extraContext,
+      languageId: document.languageId,
     });
     const maxChars = cfg.get<number>(CFG.maxChars, -1);
     this.#log(`prompt built (${prompt.length} chars${maximalist ? ", maximalist" : ""}${hint ? `, hint=${JSON.stringify(hint)}` : ""})`);
+    if (extraContext.length > 0) {
+      const totalChars = extraContext.reduce((n, c) => n + c.text.length, 0);
+      this.#log(`extra context: ${extraContext.length} chunks (${totalChars} chars)`);
+    }
 
     let collected = "";
     let cancelled = false;

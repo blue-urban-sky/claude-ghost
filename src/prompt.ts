@@ -1,11 +1,14 @@
 import * as vscode from "vscode";
 import { randomBytes } from "node:crypto";
+import type { ContextChunk } from "./context";
 
 export interface PromptConfig {
   contextMaxBytes: number;
   contextLines: number;
   hint?: string;
   maximalist?: { task: string };
+  extraContext?: ContextChunk[];
+  languageId?: string;
 }
 
 export const SYSTEM_PROMPT = [
@@ -116,12 +119,59 @@ export function buildPrompt(
   if (cleanHint) {
     lines.push(`<hint-${nonce}>${cleanHint}</hint-${nonce}>`);
   }
+  if (config.extraContext && config.extraContext.length > 0) {
+    for (const chunk of config.extraContext) {
+      const cleanText = neutraliseScaffolding(chunk.text, nonce);
+      lines.push(
+        `<file-${nonce} name="${chunk.label}" language="${chunk.language ?? ""}" role="context">`,
+        cleanText,
+        `</file-${nonce}>`,
+      );
+    }
+  }
+  if (config.languageId) {
+    const nudge = languageStyleFor(config.languageId);
+    if (nudge) {
+      lines.push(`<style lang="${config.languageId}">${nudge}</style>`);
+    }
+  }
   lines.push(
     `<file-${nonce} name="${fileName}" language="${languageId}">`,
     `${cleanPrefix}«CURSOR»${cleanSuffix}`,
     `</file-${nonce}>`,
   );
   return lines.join("\n");
+}
+
+// Per-language style nudges, kept generic (no org-specific content). These
+// target things the model commonly gets wrong in inline completion — not
+// broader architecture / testing advice which would bloat the prompt.
+// Each nudge is under 200 chars.
+const LANGUAGE_STYLE: Record<string, string> = {
+  typescript:
+    "Prefer const and precise types; avoid any unless unavoidable. Don't reintroduce duplicate imports; keep existing import order. Use named exports consistently with the rest of the file.",
+  typescriptreact:
+    "Prefer const and precise types; avoid any unless unavoidable. Don't reintroduce duplicate imports; keep existing import order. Use named exports consistent with the file.",
+  javascript:
+    "Prefer const/let over var. Preserve the file's existing module style (CJS vs ESM) — don't mix. Don't reintroduce duplicate imports; keep existing import order.",
+  javascriptreact:
+    "Prefer const/let over var. Preserve the file's existing module style (CJS vs ESM) — don't mix. Don't reintroduce duplicate imports; keep existing import order.",
+  python:
+    "No semicolons. Preserve import order (stdlib, third-party, local). Use type hints when surrounding code uses them. Keep the existing docstring style (triple-quoted, same convention).",
+  java:
+    "Honour the existing package and import style. No wildcard imports unless the file already uses them. Keep annotations on their own line. Don't insert stray semicolons.",
+  kotlin:
+    "Prefer val over var. Avoid !! — use ?., ?:, or value?.let { }. Don't reintroduce wildcard imports. Use structured coroutine scopes, not GlobalScope.",
+  go:
+    "No unused imports. gofmt-style braces on the same line. Short variable names in short scopes. Early return on `if err != nil`.",
+  shellscript:
+    "In bash, prefer [[ ]] over [ ]. Always quote variable expansions (\"$var\"). Only put set -euo pipefail at the file head — never mid-script.",
+  terraform:
+    "Preserve resource naming conventions already used in the file. Align = in blocks where the surrounding file aligns them. Don't reorder top-level blocks.",
+};
+
+export function languageStyleFor(languageId: string): string {
+  return LANGUAGE_STYLE[languageId] ?? "";
 }
 
 // Cache compiled comment-marker regexes per language so we don't recompile on
