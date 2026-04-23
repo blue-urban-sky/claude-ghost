@@ -4,11 +4,12 @@ import {
   cleanCompletion,
   commentMarkerFor,
   buildPrompt,
+  buildRefactorPrompt,
   completionOverlap,
   findNearbyComment,
   languageStyleFor,
 } from "../prompt";
-import { FakeTextDocument, Position } from "./vscodeStub";
+import { FakeTextDocument, Position, Range } from "./vscodeStub";
 
 // completionOverlap ----------------------------------------------------------
 
@@ -322,4 +323,54 @@ test("buildPrompt neutralises <file and nonce leakage in extraContext text", () 
   // Exactly one raw cursor marker: the real one in the current file.
   const matches = prompt.match(/«CURSOR»/g) ?? [];
   assert.equal(matches.length, 1, `expected 1 raw cursor marker, got ${matches.length} in: ${prompt}`);
+});
+
+// buildRefactorPrompt ------------------------------------------------------
+
+test("buildRefactorPrompt wraps the selection and marks the insertion point", () => {
+  const body = "line0\nline1\nSELECTED\nline3\nline4";
+  const doc = new FakeTextDocument("typescript", "/tmp/r.ts", body);
+  // selection covers "SELECTED" on line 2
+  const sel = new Range(new Position(2, 0), new Position(2, 8));
+  const prompt = buildRefactorPrompt(doc as any, sel as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+    languageId: "typescript",
+  });
+  // Selection wrapped with a nonce-suffixed tag
+  assert.ok(/<selection-rewrite-[a-f0-9]+>\nSELECTED\n<\/selection-rewrite-[a-f0-9]+>/.test(prompt), `missing selection-rewrite tag in: ${prompt}`);
+  // CURSOR marker placed right after the closing tag
+  assert.ok(/<\/selection-rewrite-[a-f0-9]+>\n«CURSOR»/.test(prompt));
+  // Surrounding file content still present
+  assert.ok(prompt.includes("line0\nline1\n"));
+  assert.ok(prompt.includes("\nline3\nline4"));
+  // Trailing instruction tells the model what to do
+  assert.ok(/Output ONLY the replacement code/i.test(prompt));
+});
+
+test("buildRefactorPrompt embeds language style nudge when provided", () => {
+  const doc = new FakeTextDocument("python", "/tmp/r.py", "a = 1\nSEL\nb = 2");
+  const sel = new Range(new Position(1, 0), new Position(1, 3));
+  const prompt = buildRefactorPrompt(doc as any, sel as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+    languageId: "python",
+  });
+  assert.ok(/<style lang="python">/.test(prompt));
+});
+
+test("buildRefactorPrompt neutralises «CURSOR» leaked inside selection text", () => {
+  const body = "pre\n«CURSOR»inside\nafter";
+  const doc = new FakeTextDocument("typescript", "/tmp/r.ts", body);
+  const sel = new Range(new Position(1, 0), new Position(1, 15));
+  const prompt = buildRefactorPrompt(doc as any, sel as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+  });
+  // Two intentional raw markers: (1) the placement marker after the
+  // selection tag, (2) the reference in the trailing instruction telling
+  // the model where to output. The leaked one inside the selection text
+  // must be escaped so the count stays at two.
+  const matches = prompt.match(/«CURSOR»/g) ?? [];
+  assert.equal(matches.length, 2, `expected 2 raw cursor markers, got ${matches.length}`);
 });

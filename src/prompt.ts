@@ -264,6 +264,94 @@ const META_COMMENTARY = [
   "truncated",
 ];
 
+export interface RefactorPromptConfig {
+  contextMaxBytes: number;
+  contextLines: number;
+  languageId?: string;
+  extraContext?: ContextChunk[];
+  hint?: string;
+}
+
+// Refactor prompt: the user has selected a block of code and wants it
+// rewritten. Presents the full file (or a windowed view) with the selection
+// tagged between <selection-rewrite> markers and a «CURSOR» placed right
+// after the closing tag. The warm session's system prompt already tells the
+// model to output at «CURSOR», so a direct instruction at the tail of the
+// user message steers it to produce the replacement for the marked block.
+// The replacement is applied to the VS Code selection range via the
+// Refactor Preview pane, not by parsing the model output.
+export function buildRefactorPrompt(
+  document: vscode.TextDocument,
+  selectionRange: vscode.Range,
+  config: RefactorPromptConfig,
+): string {
+  const full = document.getText();
+  const selStart = document.offsetAt(selectionRange.start);
+  const selEnd = document.offsetAt(selectionRange.end);
+  const selection = full.slice(selStart, selEnd);
+  const languageId = document.languageId;
+  const fileName = document.fileName.split(/[\\/]/).pop() ?? "untitled";
+
+  let prefix: string;
+  let suffix: string;
+  if (Buffer.byteLength(full, "utf8") <= config.contextMaxBytes) {
+    prefix = full.slice(0, selStart);
+    suffix = full.slice(selEnd);
+  } else {
+    // Centre the window on the selection's own line range.
+    const startLine = Math.max(0, selectionRange.start.line - config.contextLines);
+    const endLine = Math.min(
+      document.lineCount - 1,
+      selectionRange.end.line + config.contextLines,
+    );
+    const startOffset = document.offsetAt(new vscode.Position(startLine, 0));
+    const endOffset = document.offsetAt(document.lineAt(endLine).range.end);
+    prefix = full.slice(startOffset, selStart);
+    suffix = full.slice(selEnd, endOffset);
+  }
+
+  const nonce = randomBytes(4).toString("hex");
+  const neutral = (s: string): string => neutraliseScaffolding(s, nonce);
+
+  const lines: string[] = [];
+  // Stable prefix first for cache discipline.
+  if (config.extraContext && config.extraContext.length > 0) {
+    for (const chunk of config.extraContext) {
+      const cleanText = neutral(chunk.text);
+      lines.push(
+        `<file-${nonce} name="${chunk.label}" language="${chunk.language ?? ""}" role="context">`,
+        cleanText,
+        `</file-${nonce}>`,
+      );
+    }
+  }
+  if (config.languageId) {
+    const nudge = languageStyleFor(config.languageId);
+    if (nudge) {
+      lines.push(`<style lang="${config.languageId}">${nudge}</style>`);
+    }
+  }
+  const cleanHint = config.hint && config.hint.trim()
+    ? neutral(config.hint.trim())
+    : null;
+  if (cleanHint) {
+    lines.push(`<hint-${nonce}>${cleanHint}</hint-${nonce}>`);
+  }
+  lines.push(
+    `<file-${nonce} name="${fileName}" language="${languageId}">`,
+    neutral(prefix),
+    `<selection-rewrite-${nonce}>`,
+    neutral(selection),
+    `</selection-rewrite-${nonce}>`,
+    `«CURSOR»`,
+    neutral(suffix),
+    `</file-${nonce}>`,
+    ``,
+    `Output the code that should replace the block inside <selection-rewrite-${nonce}>…</selection-rewrite-${nonce}>. Insert at «CURSOR». Output ONLY the replacement code — no prose, no markdown fences, no explanation, no commentary.`,
+  );
+  return lines.join("\n");
+}
+
 // Longest suffix of `completion` that equals a prefix of `after`. Used by the
 // provider to size the replacement range: if the model re-emits characters
 // that already exist right of the cursor (common: trailing `)`, `}`, `;`),

@@ -31,11 +31,6 @@ export interface NextTriggerOpts {
   session?: ClaudeSession;
   providerOverrides?: ProviderOverrides;
   forceRegenerate?: boolean;
-  // When the caller armed a selection-as-hint, this is the original selection
-  // range. The provider uses it as the InlineCompletionItem's range so that
-  // accepting the ghost REPLACES the whole selection instead of just inserting
-  // at the caret.
-  selectionRange?: vscode.Range;
 }
 
 export interface CompletionMeta {
@@ -89,7 +84,6 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
   #nextSession: ClaudeSession | null = null;
   #nextProviderOverrides: ProviderOverrides | null = null;
   #nextForceRegenerate = false;
-  #nextSelectionRange: vscode.Range | null = null;
   #pending: PendingCompletion | null = null;
   // Monotonic counter used by the post-return watchdog to detect pendings
   // that were installed but never touched (accepted / cleared / moved). A
@@ -137,7 +131,6 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     if (opts.session) this.#nextSession = opts.session;
     if (opts.providerOverrides !== undefined) this.#nextProviderOverrides = opts.providerOverrides;
     if (opts.forceRegenerate) this.#nextForceRegenerate = true;
-    if (opts.selectionRange) this.#nextSelectionRange = opts.selectionRange;
   }
 
   consumeNextProviderOverrides(): ProviderOverrides | null {
@@ -245,11 +238,9 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     }
     const forceRegenerate = this.#nextForceRegenerate;
     this.#nextForceRegenerate = false;
-    const selectionRange = this.#nextSelectionRange;
-    this.#nextSelectionRange = null;
-    if (this.#nextHint || this.#nextMaximalist || this.#nextSession || forceRegenerate || selectionRange) {
+    if (this.#nextHint || this.#nextMaximalist || this.#nextSession || forceRegenerate) {
       this.#log(
-        `carried-over trigger opts: hint=${this.#nextHint ? JSON.stringify(this.#nextHint.slice(0, 40)) : "-"}, maximalist=${this.#nextMaximalist}, sessionOverride=${this.#nextSession ? "yes" : "no"}, forceRegenerate=${forceRegenerate}, selectionRange=${selectionRange ? `[${selectionRange.start.line}:${selectionRange.start.character}..${selectionRange.end.line}:${selectionRange.end.character}]` : "-"}`,
+        `carried-over trigger opts: hint=${this.#nextHint ? JSON.stringify(this.#nextHint.slice(0, 40)) : "-"}, maximalist=${this.#nextMaximalist}, sessionOverride=${this.#nextSession ? "yes" : "no"}, forceRegenerate=${forceRegenerate}`,
       );
     }
     const currentLine = document.lineAt(position.line);
@@ -349,7 +340,7 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
           totalMs: Date.now() - dedupStartedAt,
           completionLen,
         });
-        return this.#installPending(document, position, cleaned, before, after, entryVersion, dedupMetaBuilder, selectionRange);
+        return this.#installPending(document, position, cleaned, before, after, entryVersion, dedupMetaBuilder);
       }
     }
 
@@ -544,7 +535,7 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       `completion (${cleaned.length} chars, ttft=${ttftMs}ms, total=${totalMs}ms) preview=${JSON.stringify(preview)}`,
     );
 
-    return this.#installPending(document, position, cleaned, before, after, entryVersion, buildMeta, selectionRange);
+    return this.#installPending(document, position, cleaned, before, after, entryVersion, buildMeta);
   }
 
   #installPending(
@@ -555,7 +546,6 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     after: string,
     entryVersion: number,
     metaBuilder: (completionLen: number) => CompletionMeta,
-    selectionRange: vscode.Range | null,
   ): vscode.InlineCompletionItem[] {
     // Pre-return sanity: if the document changed or the position drifted while
     // we were awaiting the model, VS Code will silently refuse to render the
@@ -591,51 +581,25 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       );
     }
     this.#lastCompletion = cleaned;
-    // Range sizing falls into three modes:
-    //   1. Selection-replace single-line: user had text selected, all on one
-    //      line. VS Code's inline-suggest allows range.end.line to equal
-    //      position.line, so we set the range directly and accept replaces
-    //      the selection wholesale.
-    //   2. Selection-replace multi-line: VS Code's API requires the range to
-    //      be single-line (see InlineCompletionItem.range docs). A multi-line
-    //      range is silently rejected — nothing renders. Workaround: shrink
-    //      the range to a point at the cursor (renders cleanly), and attach
-    //      a command that deletes the original selection AFTER the insert.
-    //   3. Normal cursor trigger: size to the overlap (if any) between the
-    //      tail of `cleaned` and the head of `afterNow`. 0 overlap → empty
-    //      range (pure insertion), needed for mid-line completions to render.
-    let range: vscode.Range;
-    let overlap = 0;
-    let pendingOffset: number;
-    let mode: "selection-replace" | "selection-replace-multiline" | "overlap";
-    let deleteAfterAccept: vscode.Range | null = null;
-    if (selectionRange && selectionRange.start.line === selectionRange.end.line) {
-      range = selectionRange;
-      pendingOffset = document.offsetAt(selectionRange.start);
-      mode = "selection-replace";
-    } else if (selectionRange) {
-      range = new vscode.Range(position, position);
-      pendingOffset = document.offsetAt(position);
-      mode = "selection-replace-multiline";
-      deleteAfterAccept = selectionRange;
-    } else {
-      overlap = completionOverlap(cleaned, afterNow);
-      const rangeEndOffset = document.offsetAt(position) + overlap;
-      const rangeEnd = document.positionAt(rangeEndOffset);
-      range = new vscode.Range(position, rangeEnd);
-      pendingOffset = document.offsetAt(position);
-      mode = "overlap";
-    }
+    // Size the replacement range to exactly cover the overlap (if any)
+    // between the tail of `cleaned` and the head of `afterNow`. 0 overlap →
+    // empty range (pure insertion), needed for mid-line completions to render.
+    // Selection-based refactors are handled by a separate command that opens
+    // the Refactor Preview pane, not this inline path.
+    const overlap = completionOverlap(cleaned, afterNow);
+    const rangeEndOffset = document.offsetAt(position) + overlap;
+    const rangeEnd = document.positionAt(rangeEndOffset);
+    const range = new vscode.Range(position, rangeEnd);
     this.#pending = {
       document,
-      offset: pendingOffset,
+      offset: document.offsetAt(position),
       remaining: cleaned,
     };
     this.#pendingInstalledAt = Date.now();
     const mySerial = ++this.#pendingSerial;
 
     this.#log(
-      `returning 1 inline completion item (cleaned.length=${cleaned.length}, range=[${range.start.line}:${range.start.character}..${range.end.line}:${range.end.character}], mode=${mode}, overlapChars=${overlap}, afterNow.len=${afterNow.length}${deleteAfterAccept ? `, deleteAfterAccept=[${deleteAfterAccept.start.line}:${deleteAfterAccept.start.character}..${deleteAfterAccept.end.line}:${deleteAfterAccept.end.character}]` : ""})`,
+      `returning 1 inline completion item (cleaned.length=${cleaned.length}, range=[${range.start.line}:${range.start.character}..${range.end.line}:${range.end.character}], overlapChars=${overlap}, afterNow.len=${afterNow.length})`,
     );
 
     const returnMeta = metaBuilder(cleaned.length);
@@ -654,26 +618,6 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       );
     }, 3000);
 
-    const item = new vscode.InlineCompletionItem(cleaned, range);
-    if (deleteAfterAccept) {
-      // VS Code fires this command right after inserting the completion.
-      // The inserted text lives at `position..position+cleaned.length`;
-      // `deleteAfterAccept` is still in original coords and refers to the
-      // text BEFORE the insertion point, so deleting it leaves our
-      // completion intact. The command is an internal API, registered in
-      // src/commands.ts as `claude-ghost._deleteRange`.
-      item.command = {
-        command: "claude-ghost._deleteRange",
-        title: "Replace original selection",
-        arguments: [
-          document.uri.toString(),
-          deleteAfterAccept.start.line,
-          deleteAfterAccept.start.character,
-          deleteAfterAccept.end.line,
-          deleteAfterAccept.end.character,
-        ],
-      };
-    }
-    return [item];
+    return [new vscode.InlineCompletionItem(cleaned, range)];
   }
 }

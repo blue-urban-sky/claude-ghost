@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.2.0] - 2026-04-23
+
+### Changed — Refactor Selection replaces inline selection-as-hint
+Selection-triggered completions no longer try to thread through VS Code's inline-completion API. The API has hard constraints (single-line replacement range, prefix-match between range content and insert text) that make it a bad fit for reviewing a multi-line refactor proposal. The whole flow is now a different, API-native path:
+
+- Trigger the completion keybind with a non-empty selection → runs the new `claude-ghost.refactorSelection` command → opens VS Code's native **Refactor Preview** panel with a side-by-side red/green diff and Apply / Discard buttons.
+- Trigger the completion keybind with an empty cursor → same inline ghost text as before, nothing changes.
+- Same keybind, `editor.selection.isEmpty` dispatches. One muscle memory.
+
+Progress surfaces as a cancellable status-notification ("Claude Ghost: refactoring selection…") while the model streams. Cancel or the notification's close button aborts via `session.interrupt`. Document-version snapshot prevents applying a stale proposal if you kept typing during the request.
+
+### Added
+- New command `claude-ghost.refactorSelection` (also reachable via the palette).
+- New prompt builder `buildRefactorPrompt` — full file context, selection wrapped in `<selection-rewrite>` tags with `«CURSOR»` placed right after the closing tag so the warm session's FIM system prompt still steers correctly.
+
+### Removed
+- `NextTriggerOpts.selectionRange` and the `#nextSelectionRange` plumbing in the provider.
+- The `selection-replace` / `selection-replace-multiline` modes in `#installPending`.
+- The `claude-ghost._deleteRange` internal command (v1.1.3 workaround, no longer needed).
+- Selection-as-hint collapse-selection dance in `triggerCompletion`.
+- Net code reduction despite the new command.
+
 ## [1.1.3] - 2026-04-23
 
 ### Fixed

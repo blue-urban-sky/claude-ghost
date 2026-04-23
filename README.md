@@ -28,12 +28,13 @@ All under `Claude Ghost:` in the command palette.
 
 | Command | What it does |
 |---|---|
-| **Trigger Completion** | Same as the keybinding. |
+| **Trigger Completion** | Same as the keybinding. With no selection, fills in ghost text at the cursor. With a selection, opens the Refactor Preview pane with the proposed rewrite. |
+| **Refactor Selection** | Same as triggering with a selection — explicit entry point. Opens VS Code's native Refactor Preview (red/green diff, Apply / Discard). |
 | **Trigger With Hint** | Input box; your instruction (e.g. `use async/await`) biases the next completion, then clears. |
 | **Trigger Maximalist** *(experimental)* | Reads a nearby comment describing intent, generates a full in-file implementation. Needs `maximalist: true`. |
 | **Restart Session** | Kills the current `claude` process and spawns a fresh session. |
 | **Show Session Info** | Quick-pick with live-tail view, raw tail command, fork command, open-JSONL, copy-ID, restart. |
-| **Insert Last Completion** | Force-inserts the last completion at the cursor — escape hatch when ghost rendering is suppressed. |
+| **Insert Last Completion** | Force-inserts the last completion at the cursor (replaces the active selection if any) — escape hatch when ghost rendering is suppressed. |
 
 ## Settings
 

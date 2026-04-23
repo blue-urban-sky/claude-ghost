@@ -8,6 +8,7 @@ import type { MetricsRecorder, MetricsSummary } from "./metrics";
 import { CFG } from "./state";
 import { errorMessage } from "./log";
 import { sessionJsonlPath, shellQuote } from "./paths";
+import { buildRefactorPrompt, cleanCompletion } from "./prompt";
 
 export interface TriggerOpts {
   hint?: string;
@@ -15,10 +16,7 @@ export interface TriggerOpts {
   session?: ClaudeSession;
   providerOverrides?: ProviderOverrides;
   forceRegenerate?: boolean;
-  selectionRange?: vscode.Range;
 }
-
-const SELECTION_HINT_MAX = 2000;
 
 export interface HintParseResult {
   hint: string;
@@ -60,35 +58,7 @@ export function registerCommands(
   logger: Logger,
   metrics?: MetricsRecorder,
 ): void {
-  const triggerCompletion = async (
-    opts: TriggerOpts = {},
-    source: "plain" | "hint" | "maximalist" = "plain",
-  ): Promise<void> => {
-    // Selection-as-hint: only the plain trigger, only when no explicit hint
-    // was provided. Keeps the hint keybind and the maximalist command
-    // untouched, and respects a user-supplied hint verbatim.
-    if (source === "plain" && opts.hint === undefined) {
-      const editor = vscode.window.activeTextEditor;
-      const selection = editor?.selection;
-      if (editor && selection && !selection.isEmpty) {
-        const raw = editor.document.getText(selection);
-        const truncated = raw.length > SELECTION_HINT_MAX
-          ? raw.slice(0, SELECTION_HINT_MAX) + " …(truncated)"
-          : raw;
-        const selectionRange = new vscode.Range(selection.start, selection.end);
-        // Collapse the editor's selection so Tab won't indent the block when
-        // the ghost is visible. The captured range still spans the selection
-        // so the returned InlineCompletionItem replaces the whole selection
-        // on accept.
-        editor.selection = new vscode.Selection(selection.end, selection.end);
-        opts = {
-          ...opts,
-          hint: `rewrite this selection: ${truncated}`,
-          selectionRange,
-        };
-        logger.log(`selection-as-hint (${raw.length} chars, range=[${selectionRange.start.line}:${selectionRange.start.character}..${selectionRange.end.line}:${selectionRange.end.character}])`);
-      }
-    }
+  const triggerCompletion = async (opts: TriggerOpts = {}): Promise<void> => {
     provider.setNextTrigger(opts);
     await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
   };
@@ -110,7 +80,7 @@ export function registerCommands(
         const ms = await sessions.ensureMaximalist(
           cfg.get<boolean>(CFG.maximalistFreshSession, true),
         );
-        await triggerCompletion({ maximalist: true, session: ms }, "maximalist");
+        await triggerCompletion({ maximalist: true, session: ms });
       } catch (err) {
         logger.log(`maximalist session failed: ${errorMessage(err)}`);
         logger.showError(`maximalist session failed — ${errorMessage(err)}`);
@@ -135,17 +105,14 @@ export function registerCommands(
         if (parsed.overrides.diff) enabled.push("diff");
         const hintForLog = parsed.hint.length > 0 ? parsed.hint : null;
         logger.log(`hint overrides (providers=[${enabled.join(",")}], hint=${hintForLog !== null ? JSON.stringify(hintForLog) : "\"-\""})`);
-        await triggerCompletion(
-          {
-            hint: parsed.hint.length > 0 ? parsed.hint : undefined,
-            providerOverrides: parsed.overrides,
-          },
-          "hint",
-        );
+        await triggerCompletion({
+          hint: parsed.hint.length > 0 ? parsed.hint : undefined,
+          providerOverrides: parsed.overrides,
+        });
         return;
       }
       // No tokens — preserve the pre-existing UX: empty hint is still passed.
-      await triggerCompletion({ hint: raw }, "hint");
+      await triggerCompletion({ hint: raw });
     }),
   );
 
@@ -171,33 +138,107 @@ export function registerCommands(
     }),
   );
 
-  // Internal command fired by `InlineCompletionItem.command` after VS Code
-  // inserts a multi-line selection-replace completion. Deletes the ORIGINAL
-  // selection range (in pre-insert coords — safe because the insertion
-  // happened at the tail of the selection range, so the range is still
-  // valid in the post-insert document).
+  const runRefactorSelection = async (): Promise<void> => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.selection.isEmpty) {
+      vscode.window.showInformationMessage("Claude Ghost: select some code first.");
+      return;
+    }
+    const session = sessions.current();
+    if (!session || session.state !== "ready") {
+      vscode.window.showWarningMessage(
+        `Claude Ghost: session not ready (state=${session?.state ?? "null"}). Try again in a moment.`,
+      );
+      return;
+    }
+    const document = editor.document;
+    const selection = new vscode.Range(editor.selection.start, editor.selection.end);
+    const entryVersion = document.version;
+    const cfg = vscode.workspace.getConfiguration(CFG.section);
+    const prompt = buildRefactorPrompt(document, selection, {
+      contextMaxBytes: cfg.get<number>(CFG.contextMaxBytes, 100000),
+      contextLines: cfg.get<number>(CFG.contextLines, 100),
+      languageId: document.languageId,
+    });
+    logger.log(
+      `refactor-selection prompt built (${prompt.length} chars, range=[${selection.start.line}:${selection.start.character}..${selection.end.line}:${selection.end.character}], lang=${document.languageId})`,
+    );
+
+    try {
+      const replacement = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Claude Ghost: refactoring selection…",
+          cancellable: true,
+        },
+        async (_progress, token): Promise<string | null> => {
+          const startedAt = Date.now();
+          let collected = "";
+          const cancelSub = token.onCancellationRequested(async () => {
+            try {
+              await session.interrupt();
+            } catch {
+              // ignore
+            }
+          });
+          try {
+            for await (const delta of session.complete(prompt)) {
+              if (token.isCancellationRequested) break;
+              collected += delta;
+            }
+          } finally {
+            cancelSub.dispose();
+          }
+          if (token.isCancellationRequested) {
+            logger.log(`refactor-selection cancelled (collected=${collected.length})`);
+            return null;
+          }
+          const cleaned = cleanCompletion(collected);
+          logger.log(
+            `refactor-selection completed (${cleaned.length} chars, total=${Date.now() - startedAt}ms)`,
+          );
+          return cleaned.trim() ? cleaned : null;
+        },
+      );
+
+      if (!replacement) {
+        vscode.window.showInformationMessage("Claude Ghost: no refactor produced.");
+        return;
+      }
+      if (document.version !== entryVersion) {
+        vscode.window.showWarningMessage(
+          "Claude Ghost: document changed during refactor — aborted to avoid applying to stale coordinates.",
+        );
+        logger.log(`refactor-selection aborted: document version ${entryVersion} → ${document.version}`);
+        return;
+      }
+
+      // Open the native Refactor Preview pane with red/green diff and
+      // Apply/Discard buttons. `isRefactoring: true` tells VS Code this is a
+      // code transformation, not a simple insert — surfaces the preview UI
+      // and the undo grouping with a descriptive label.
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(document.uri, selection, replacement, {
+        label: "Claude Ghost: rewrite selection",
+        needsConfirmation: true,
+        iconPath: new vscode.ThemeIcon("sparkle"),
+      });
+      const applied = await vscode.workspace.applyEdit(edit, { isRefactoring: true });
+      logger.log(`refactor-selection applyEdit returned ${applied}`);
+    } catch (err) {
+      logger.log(`refactor-selection failed: ${errorMessage(err)}`);
+      logger.showError(`refactor failed — ${errorMessage(err)}`);
+    }
+  };
+
   context.subscriptions.push(
-    vscode.commands.registerCommand(
-      "claude-ghost._deleteRange",
-      async (uriStr: string, sl: number, sc: number, el: number, ec: number) => {
-        try {
-          const uri = vscode.Uri.parse(uriStr);
-          const edit = new vscode.WorkspaceEdit();
-          edit.delete(uri, new vscode.Range(sl, sc, el, ec));
-          const ok = await vscode.workspace.applyEdit(edit);
-          logger.log(`_deleteRange applied=${ok} range=[${sl}:${sc}..${el}:${ec}]`);
-        } catch (err) {
-          logger.log(`_deleteRange failed: ${errorMessage(err)}`);
-        }
-      },
-    ),
+    vscode.commands.registerCommand("claude-ghost.refactorSelection", runRefactorSelection),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("claude-ghost.trigger", async () => {
       // Regenerate path: if a ghost is already visible, re-roll with a
-      // "different approach" hint instead of firing selection-as-hint. Skips
-      // in-flight dedup via forceRegenerate.
+      // "different approach" hint. Skips in-flight dedup via forceRegenerate.
       if (provider.hasPending) {
         const prevLen = provider.lastCompletion?.length ?? "n/a";
         logger.log(`regenerate (previous.len=${prevLen})`);
@@ -206,6 +247,14 @@ export function registerCommands(
           forceRegenerate: true,
         });
         await vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+        return;
+      }
+      // Selection-dispatch: non-empty selection routes to the refactor-preview
+      // flow (native diff panel with Apply/Discard). Empty selection stays on
+      // the inline-ghost path. Same keybind, one muscle-memory.
+      const editor = vscode.window.activeTextEditor;
+      if (editor && !editor.selection.isEmpty) {
+        await runRefactorSelection();
         return;
       }
       await triggerCompletion();
