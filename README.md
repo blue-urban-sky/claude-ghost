@@ -122,6 +122,7 @@ First completion after activation may be slower due to server-side model warm-up
 
 ## Troubleshooting
 
+- **Selecting code doesn't auto-trigger a completion** — by design. VS Code's inline-completion API only fires on manual trigger or on text edits (when `autoTrigger` is on). Cursor moves and clicks don't fire anything — same for Copilot, Cursor, and every other inline provider. After selecting, hit the trigger keybind: the selection is passed as a rewrite hint, and accepting replaces it in place.
 - **Stuck on "starting"** — check the *Claude Ghost* output channel. Usually a missing binary (`claudePath`) or a failed CLI auth. Run `claude -p "hi"` in a terminal to verify the CLI on its own.
 - **Empty ghost text** — the model returned content but VS Code suppressed it (common when the completion's opening character already exists at the cursor). Use *Insert Last Completion*.
 - **Completions take 15 s+** — extended thinking is on. Set `disableThinking: true` (default). A global `alwaysThinkingEnabled: true` in `~/.claude/settings.json` is overridden by the extension's env var — no edit needed there.

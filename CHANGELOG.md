@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1] - 2026-04-23
+
+### Fixed
+- Selection-as-hint now actually replaces the selection on accept. Before v1.1.1 the provider's replacement range only covered `[cursor, cursor+overlap]`, so (a) Tab-to-accept lost to "indent selection" when the selection was multi-line, and (b) accepting appended the completion instead of replacing the selection. Now: when a selection is active at trigger time, the editor's selection is collapsed to its end (Tab no longer indents) and the returned `InlineCompletionItem.range` spans the original selection — accept replaces it wholesale.
+- `Insert Last Completion` command now replaces the active selection (if any) instead of inserting at the caret, matching the same intent.
+- Hint text now reads `rewrite this selection:` (was `complete or rewrite:`) — more accurate for the primary use case.
+
 ## [1.1.0] - 2026-04-23
 
 First feature release after v1.0.x hardening. Delivers the entire roadmap in `PLAN.md` (items 1-12) behind default-on / default-off toggles per the Settings overview.

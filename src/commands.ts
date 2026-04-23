@@ -15,6 +15,7 @@ export interface TriggerOpts {
   session?: ClaudeSession;
   providerOverrides?: ProviderOverrides;
   forceRegenerate?: boolean;
+  selectionRange?: vscode.Range;
 }
 
 const SELECTION_HINT_MAX = 2000;
@@ -74,8 +75,18 @@ export function registerCommands(
         const truncated = raw.length > SELECTION_HINT_MAX
           ? raw.slice(0, SELECTION_HINT_MAX) + " …(truncated)"
           : raw;
-        opts = { ...opts, hint: `complete or rewrite: ${truncated}` };
-        logger.log(`selection-as-hint (${raw.length} chars)`);
+        const selectionRange = new vscode.Range(selection.start, selection.end);
+        // Collapse the editor's selection so Tab won't indent the block when
+        // the ghost is visible. The captured range still spans the selection
+        // so the returned InlineCompletionItem replaces the whole selection
+        // on accept.
+        editor.selection = new vscode.Selection(selection.end, selection.end);
+        opts = {
+          ...opts,
+          hint: `rewrite this selection: ${truncated}`,
+          selectionRange,
+        };
+        logger.log(`selection-as-hint (${raw.length} chars, range=[${selectionRange.start.line}:${selectionRange.start.character}..${selectionRange.end.line}:${selectionRange.end.character}])`);
       }
     }
     provider.setNextTrigger(opts);
@@ -148,7 +159,14 @@ export function registerCommands(
         return;
       }
       await editor.edit((edit) => {
-        edit.insert(editor.selection.active, last);
+        // If there's an active selection, replace it — matches the
+        // selection-as-hint semantic (the user selected what they wanted
+        // rewritten). Otherwise insert at cursor.
+        if (!editor.selection.isEmpty) {
+          edit.replace(editor.selection, last);
+        } else {
+          edit.insert(editor.selection.active, last);
+        }
       });
     }),
   );
