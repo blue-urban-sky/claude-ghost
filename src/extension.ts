@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
-import { ClaudeGhostProvider } from "./provider";
+import { ClaudeGhostProvider, type CompletionMeta } from "./provider";
 import { createLogger } from "./log";
 import { createStatusBar } from "./statusBar";
 import { createSessionLogging } from "./sessionLogging";
 import { createSessionManager } from "./sessionManager";
 import { registerCommands } from "./commands";
+import { createMetricsRecorder } from "./metrics";
 import {
   CFG,
   SPAWN_AFFECTING_KEYS,
@@ -35,15 +36,55 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   sessions.onStateChange((s) => statusBar.update(s));
 
+  const recorder = createMetricsRecorder(
+    () =>
+      vscode.workspace
+        .getConfiguration(CFG.section)
+        .get<boolean>(CFG.localMetrics, false),
+    logger,
+  );
+  context.subscriptions.push({ dispose: () => recorder.dispose() });
+
+  let lastReturnedMeta: CompletionMeta | null = null;
+
   const onPendingCleared = (reason: string): void => {
     logger.log(`declined (${reason})`);
     logger.sessionAppend(`\n── DECLINED (${reason}) ──`);
+    if (lastReturnedMeta) {
+      recorder.record({
+        ts: new Date().toISOString(),
+        model: lastReturnedMeta.model,
+        effort: lastReturnedMeta.effort,
+        languageId: lastReturnedMeta.languageId,
+        ttftMs: lastReturnedMeta.ttftMs,
+        totalMs: lastReturnedMeta.totalMs,
+        completionLen: lastReturnedMeta.completionLen,
+        outcome: "declined",
+        declineReason: reason,
+      });
+      lastReturnedMeta = null;
+    }
   };
 
   const provider = new ClaudeGhostProvider(
     () => sessions.current(),
     (msg) => logger.log(msg),
     onPendingCleared,
+    (meta) => {
+      lastReturnedMeta = meta;
+    },
+    ({ outcome, meta }) => {
+      recorder.record({
+        ts: new Date().toISOString(),
+        model: meta.model,
+        effort: meta.effort,
+        languageId: meta.languageId,
+        ttftMs: meta.ttftMs,
+        totalMs: meta.totalMs,
+        completionLen: meta.completionLen,
+        outcome,
+      });
+    },
   );
 
   // Multi-root + remote schemes: support files on local disk, remote
@@ -60,7 +101,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
   );
 
-  registerCommands(context, provider, sessions, logging, logger);
+  registerCommands(context, provider, sessions, logging, logger, recorder);
 
   // Auto-trigger via a debounced timer is kept as a fallback for users on
   // older VS Code. Provider will also accept Automatic trigger kind now.
@@ -117,6 +158,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       logger.sessionAppend(
         `\n── ${full ? "ACCEPTED" : "ACCEPTED (partial)"} ──\n${accepted}`,
       );
+      if (lastReturnedMeta) {
+        recorder.record({
+          ts: new Date().toISOString(),
+          model: lastReturnedMeta.model,
+          effort: lastReturnedMeta.effort,
+          languageId: lastReturnedMeta.languageId,
+          ttftMs: lastReturnedMeta.ttftMs,
+          totalMs: lastReturnedMeta.totalMs,
+          completionLen: lastReturnedMeta.completionLen,
+          outcome: full ? "accepted" : "partial",
+        });
+        if (full) lastReturnedMeta = null;
+      }
     }),
   );
 

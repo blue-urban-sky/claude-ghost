@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Opt-in local metrics at `~/.claude-ghost/metrics.jsonl`. One JSONL line per completion with ttft, total, length, outcome. Setting `claude-ghost.localMetrics` (default off). `Claude Ghost: Show Metrics Summary` command returns windowed stats.
+
 ## [1.0.2] - 2026-04-23
 
 ### Fixed

@@ -22,6 +22,25 @@ export interface NextTriggerOpts {
   session?: ClaudeSession;
 }
 
+export interface CompletionMeta {
+  model: string;
+  effort: string;
+  languageId: string;
+  ttftMs: number;
+  totalMs: number;
+  completionLen: number;
+}
+
+export type CompletionOutcomeSignal =
+  | "cancelled"
+  | "failed"
+  | "empty";
+
+export interface OutcomeEvent {
+  outcome: CompletionOutcomeSignal;
+  meta: CompletionMeta;
+}
+
 interface InflightEntry {
   abort: AbortController;
   promise: Promise<void>;
@@ -44,15 +63,22 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
   readonly #getSession: () => ClaudeSession | null;
   readonly #log: Log;
   readonly #onPendingCleared: (reason: string) => void;
+  readonly #onCompletionReturned: (meta: CompletionMeta) => void;
+  readonly #onOutcome: (event: OutcomeEvent) => void;
+  #lastReturnMeta: CompletionMeta | null = null;
 
   constructor(
     getSession: () => ClaudeSession | null,
     log: Log,
     onPendingCleared: (reason: string) => void = () => undefined,
+    onCompletionReturned: (meta: CompletionMeta) => void = () => undefined,
+    onOutcome: (event: OutcomeEvent) => void = () => undefined,
   ) {
     this.#getSession = getSession;
     this.#log = log;
     this.#onPendingCleared = onPendingCleared;
+    this.#onCompletionReturned = onCompletionReturned;
+    this.#onOutcome = onOutcome;
   }
 
   get lastCompletion(): string | null {
@@ -61,6 +87,10 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
 
   get hasPending(): boolean {
     return this.#pending !== null;
+  }
+
+  get lastReturnMeta(): CompletionMeta | null {
+    return this.#lastReturnMeta;
   }
 
   setNextTrigger(opts: NextTriggerOpts): void {
@@ -325,13 +355,26 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
 
     const totalMs = Date.now() - startedAt;
     const ttftMs = firstDeltaAt ? firstDeltaAt - startedAt : -1;
+    const model = cfg.get<string>(CFG.model, "haiku");
+    const effort = cfg.get<string>(CFG.effort, "low");
+    const languageId = document.languageId;
+    const buildMeta = (completionLen: number): CompletionMeta => ({
+      model,
+      effort,
+      languageId,
+      ttftMs,
+      totalMs,
+      completionLen,
+    });
 
     if (failed) {
       this.#log(`completion failed after ${totalMs}ms: ${failed.message}`);
+      this.#onOutcome({ outcome: "failed", meta: buildMeta(collected.length) });
       return undefined;
     }
     if (cancelled) {
       this.#log(`cancelled after ${totalMs}ms (collected=${collected.length})`);
+      this.#onOutcome({ outcome: "cancelled", meta: buildMeta(collected.length) });
       return undefined;
     }
 
@@ -340,6 +383,7 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       this.#log(
         `empty completion (raw=${collected.length} chars, ttft=${ttftMs}ms, total=${totalMs}ms)`,
       );
+      this.#onOutcome({ outcome: "empty", meta: buildMeta(0) });
       return undefined;
     }
 
@@ -351,6 +395,7 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       this.#log(
         `completion discarded — token cancelled (raw=${collected.length} chars)`,
       );
+      this.#onOutcome({ outcome: "cancelled", meta: buildMeta(cleaned.length) });
       return undefined;
     }
 
@@ -415,6 +460,10 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     this.#log(
       `returning 1 inline completion item (cleaned.length=${cleaned.length}, range=[${position.line}:${position.character}..${range.end.line}:${range.end.character}], overlapChars=${overlap}, afterNow.len=${afterNow.length})`,
     );
+
+    const returnMeta = buildMeta(cleaned.length);
+    this.#lastReturnMeta = returnMeta;
+    this.#onCompletionReturned(returnMeta);
 
     // Post-return watchdog: if nothing touches this pending within 3 s (no
     // accept, no clear, no cursor move, no doc change), the ghost almost

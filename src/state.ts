@@ -16,6 +16,7 @@ export const CFG = {
   autoTriggerDelayMs: "autoTriggerDelayMs",
   maximalist: "maximalist",
   maximalistFreshSession: "maximalistFreshSession",
+  localMetrics: "localMetrics",
 } as const;
 
 // Settings keys that require respawning the child CLI. Changing these
