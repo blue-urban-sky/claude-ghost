@@ -112,13 +112,13 @@ export function buildPrompt(
     ? neutraliseScaffolding(config.hint.trim(), nonce)
     : null;
 
+  // Prompt-cache discipline: order sections stable → volatile. Anthropic's
+  // prompt cache keys on longest-common-prefix, so putting stable-across-
+  // triggers sections first (extra context snapshots, language style) and
+  // volatile per-call sections (task, hint, current file cursor region) last
+  // maximises cache hits when the user re-triggers with only cursor moves.
   const lines: string[] = [];
-  if (cleanTask) {
-    lines.push(`<task-${nonce}>${cleanTask}</task-${nonce}>`);
-  }
-  if (cleanHint) {
-    lines.push(`<hint-${nonce}>${cleanHint}</hint-${nonce}>`);
-  }
+  // --- stable prefix ---
   if (config.extraContext && config.extraContext.length > 0) {
     for (const chunk of config.extraContext) {
       const cleanText = neutraliseScaffolding(chunk.text, nonce);
@@ -134,6 +134,13 @@ export function buildPrompt(
     if (nudge) {
       lines.push(`<style lang="${config.languageId}">${nudge}</style>`);
     }
+  }
+  // --- volatile tail ---
+  if (cleanTask) {
+    lines.push(`<task-${nonce}>${cleanTask}</task-${nonce}>`);
+  }
+  if (cleanHint) {
+    lines.push(`<hint-${nonce}>${cleanHint}</hint-${nonce}>`);
   }
   lines.push(
     `<file-${nonce} name="${fileName}" language="${languageId}">`,

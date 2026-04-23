@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.0] - 2026-04-23
+
+First feature release after v1.0.x hardening. Delivers the entire roadmap in `PLAN.md` (items 1-12) behind default-on / default-off toggles per the Settings overview.
 
 ### Added
 - Selection-as-hint: selecting text before `Claude Ghost: Trigger Completion` biases the completion without touching the hint keybind.
@@ -16,6 +18,7 @@
   - **Git diff** (item 6): compact summary of uncommitted hunks for the current file, capped at 500 chars (setting `useGitDiff`, default on).
   - **Visible + recent** (item 1): optional wider net over visible tabs and a ring buffer of recent edits (setting `extraContext`, default `"off"`).
 - Per-call overrides via `+visible` / `+recent` / `+symbols` / `+diff` prefix tokens on the hint keybind (wired in Wave 1) are now honoured.
+- Prompt-cache discipline: `buildPrompt` now orders sections stable → volatile (extra context + language style first; task, hint, current file last). Maximises Anthropic prompt-cache hit rate on repeated triggers in the same file.
 
 ## [1.0.2] - 2026-04-23
 

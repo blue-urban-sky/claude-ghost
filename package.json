@@ -2,7 +2,7 @@
   "name": "claude-ghost",
   "displayName": "Claude Ghost",
   "description": "Inline ghost-text completions powered by the local Claude CLI.",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "publisher": "sam-lyon",
   "license": "MIT",
   "repository": {
@@ -180,7 +180,12 @@
         },
         "claude-ghost.extraContext": {
           "type": "string",
-          "enum": ["off", "recent", "visible", "visible+recent"],
+          "enum": [
+            "off",
+            "recent",
+            "visible",
+            "visible+recent"
+          ],
           "default": "off",
           "description": "Include extra files in the prompt. `recent` uses a ring buffer of recently-edited files; `visible` pulls from other open tabs (capped at 3). Off by default — enable when the current-file-only prompt feels narrow."
         },
