@@ -39,6 +39,23 @@ All under `Claude Ghost:` in the command palette.
 
 All under `claude-ghost.*`.
 
+### Context
+
+Beyond the current-file prompt, four context providers can augment the request with cross-file signal. Defaults keep bloat low: diff / symbols / hover are on (surgical, demand-driven); visible/recent is off (widest net).
+
+| Setting | Default | Notes |
+|---|---|---|
+| `useSymbolResolution` | `true` | LSP `executeDefinitionProvider` on identifiers near the cursor; pulls the first ~40 lines of each defining file. |
+| `symbolResolutionMaxFiles` | `6` | Cap on defining files per completion. |
+| `useGitDiff` | `true` | Working-tree diff for the current file, stripped to hunk headers + ± lines, capped at 500 chars. Acts as an intent signal. |
+| `useTypeInfo` | `true` | When the cursor sits right after `.` / `->` / `::`, pulls the receiver's type via LSP hover. |
+| `extraContext` | `"off"` | `"off"` / `"recent"` / `"visible"` / `"visible+recent"`. Opt-in widest net — recent edits (ring buffer) and/or other open tabs (capped at 3). |
+| `extraContextMaxBytes` | `30000` | Total byte budget across all the context providers above; excess is trimmed from the lowest-priority source. |
+
+Per-call opt-in: prefix the `Trigger With Hint` input with `+visible` / `+recent` / `+symbols` / `+diff` to force a provider on for that one completion. Remaining text is the hint.
+
+### Core
+
 | Setting | Default | Notes |
 |---|---|---|
 | `model` | `haiku` | `haiku` / `sonnet` / `opus`, or a pinned full ID in JSON. |

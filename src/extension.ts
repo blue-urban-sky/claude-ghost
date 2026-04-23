@@ -6,6 +6,7 @@ import { createSessionLogging } from "./sessionLogging";
 import { createSessionManager } from "./sessionManager";
 import { registerCommands } from "./commands";
 import { createMetricsRecorder } from "./metrics";
+import { recordRecentEdit } from "./context/visibleRecent";
 import {
   CFG,
   SPAWN_AFFECTING_KEYS,
@@ -149,6 +150,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           scheduleAutoTrigger();
         }
       }
+      // Wave 2: feed the recent-edits ring buffer. Only file / remote schemes
+      // (skip untitled / output / git: etc.), and skip the currently-active
+      // doc — the ring buffer tracks OTHERS, since the active doc is already
+      // the primary prompt content.
+      if (event.contentChanges.length > 0) {
+        const scheme = event.document.uri.scheme;
+        if (scheme === "file" || scheme === "vscode-remote") {
+          const active = vscode.window.activeTextEditor;
+          if (!active || active.document !== event.document) {
+            recordRecentEdit(event.document);
+          }
+        }
+      }
+
       const result = provider.handleDocumentChange(event);
       if (!result) return;
       const { accepted, full } = result;

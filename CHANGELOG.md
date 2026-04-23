@@ -10,6 +10,12 @@
 - ContextBuilder seam (`src/context.ts::assembleExtraContext`) — stub for now; Wave 2 populates.
 - Language-aware prompt nudges. `languageStyleFor(languageId)` returns concise style hints for ts/tsx/js/jsx/py/java/kt/go/sh/tf; unknown languages get no nudge. Nudges embedded as `<style lang="…">` between extra context and the current file.
 - Opt-in local metrics at `~/.claude-ghost/metrics.jsonl`. One JSONL line per completion with ttft, total, length, outcome. Setting `claude-ghost.localMetrics` (default off). `Claude Ghost: Show Metrics Summary` command returns windowed stats.
+- Context providers populated:
+  - **Symbol resolution** (item 5): LSP `executeDefinitionProvider` on identifiers near cursor; defining files included (setting `useSymbolResolution`, default on; cap `symbolResolutionMaxFiles`).
+  - **Receiver hover** (item 4): when cursor sits after `.` / `->` / `::`, fetches the receiver's type via LSP hover (setting `useTypeInfo`, default on).
+  - **Git diff** (item 6): compact summary of uncommitted hunks for the current file, capped at 500 chars (setting `useGitDiff`, default on).
+  - **Visible + recent** (item 1): optional wider net over visible tabs and a ring buffer of recent edits (setting `extraContext`, default `"off"`).
+- Per-call overrides via `+visible` / `+recent` / `+symbols` / `+diff` prefix tokens on the hint keybind (wired in Wave 1) are now honoured.
 
 ## [1.0.2] - 2026-04-23
 

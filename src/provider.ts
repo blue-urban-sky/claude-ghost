@@ -276,7 +276,14 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
         this.#log(`maximalist task: ${JSON.stringify(task)}`);
       }
     }
-    const extraContext = assembleExtraContext(document, position, cfg);
+    const overrides = this.consumeNextProviderOverrides();
+    const extraContext = await assembleExtraContext(
+      document,
+      position,
+      cfg,
+      overrides,
+      this.#log,
+    );
     const prompt = buildPrompt(document, position, {
       contextMaxBytes: cfg.get<number>(CFG.contextMaxBytes, 100000),
       contextLines: cfg.get<number>(CFG.contextLines, 100),
@@ -289,7 +296,14 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     this.#log(`prompt built (${prompt.length} chars${maximalist ? ", maximalist" : ""}${hint ? `, hint=${JSON.stringify(hint)}` : ""}, lang=${document.languageId})`);
     if (extraContext.length > 0) {
       const totalChars = extraContext.reduce((n, c) => n + c.text.length, 0);
-      this.#log(`extra context: ${extraContext.length} chunks (${totalChars} chars)`);
+      const bySource = extraContext.reduce<Record<string, number>>((acc, c) => {
+        acc[c.source] = (acc[c.source] ?? 0) + 1;
+        return acc;
+      }, {});
+      const breakdown = Object.entries(bySource)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(",");
+      this.#log(`extra context: ${extraContext.length} chunks (${totalChars} chars, ${breakdown})`);
     }
     const newPromptHash = promptHash(prompt);
 
