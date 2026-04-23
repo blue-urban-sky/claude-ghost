@@ -17,6 +17,12 @@ export const CFG = {
   maximalist: "maximalist",
   maximalistFreshSession: "maximalistFreshSession",
   localMetrics: "localMetrics",
+  extraContext: "extraContext",
+  extraContextMaxBytes: "extraContextMaxBytes",
+  useSymbolResolution: "useSymbolResolution",
+  symbolResolutionMaxFiles: "symbolResolutionMaxFiles",
+  useGitDiff: "useGitDiff",
+  useTypeInfo: "useTypeInfo",
 } as const;
 
 // Settings keys that require respawning the child CLI. Changing these

@@ -177,6 +177,37 @@
           "type": "boolean",
           "default": false,
           "description": "Opt in to writing a per-completion JSONL log at ~/.claude-ghost/metrics.jsonl. No upload; for your own `jq` analysis."
+        },
+        "claude-ghost.extraContext": {
+          "type": "string",
+          "enum": ["off", "recent", "visible", "visible+recent"],
+          "default": "off",
+          "description": "Include extra files in the prompt. `recent` uses a ring buffer of recently-edited files; `visible` pulls from other open tabs (capped at 3). Off by default — enable when the current-file-only prompt feels narrow."
+        },
+        "claude-ghost.extraContextMaxBytes": {
+          "type": "number",
+          "default": 30000,
+          "description": "Total byte budget for extra context across all providers (visible, recent, symbols, hover, diff)."
+        },
+        "claude-ghost.useSymbolResolution": {
+          "type": "boolean",
+          "default": true,
+          "description": "Resolve identifiers near the cursor via LSP and include their defining files. Demand-driven, surgical."
+        },
+        "claude-ghost.symbolResolutionMaxFiles": {
+          "type": "number",
+          "default": 6,
+          "description": "Cap on how many defining files to include from symbol resolution per completion."
+        },
+        "claude-ghost.useGitDiff": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include a compact summary of the current file's uncommitted changes (hunk headers + ± lines, capped at 500 chars) as an intent signal."
+        },
+        "claude-ghost.useTypeInfo": {
+          "type": "boolean",
+          "default": true,
+          "description": "When the cursor sits right after an accessor (., ->, ::), pull the receiver's type via LSP hover and include it in the prompt."
         }
       }
     }

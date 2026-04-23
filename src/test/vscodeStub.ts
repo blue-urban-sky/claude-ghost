@@ -14,14 +14,31 @@ export interface TextLineShim {
   range: Range;
 }
 
+export class Uri {
+  constructor(public readonly scheme: string, public readonly fsPath: string) {}
+  toString(): string {
+    return `${this.scheme}://${this.fsPath}`;
+  }
+  static parse(s: string): Uri {
+    const m = /^([a-z-]+):\/\/(.*)$/.exec(s);
+    if (m) return new Uri(m[1], m[2]);
+    return new Uri("file", s);
+  }
+  static file(p: string): Uri {
+    return new Uri("file", p);
+  }
+}
+
 export class FakeTextDocument {
   public readonly lines: string[];
+  public readonly uri: Uri;
   constructor(
     public readonly languageId: string,
     public readonly fileName: string,
     content: string,
   ) {
     this.lines = content.split("\n");
+    this.uri = new Uri("file", fileName);
   }
   get lineCount(): number {
     return this.lines.length;
@@ -46,10 +63,30 @@ export class FakeTextDocument {
 }
 
 // Matches the shape consumed by createRequire() fallbacks below.
-export const workspace = {};
-export const window = {};
+export const workspace = {
+  getConfiguration: () => ({
+    get: <T>(_key: string, fallback: T): T => fallback,
+    has: () => false,
+    inspect: () => undefined,
+    update: async () => undefined,
+  }),
+  openTextDocument: async (_uri: Uri): Promise<FakeTextDocument> => {
+    throw new Error("openTextDocument stub — inject a fake in your test");
+  },
+  onDidChangeTextDocument: (_listener: unknown) => ({ dispose: () => undefined }),
+};
+export const window = {
+  visibleTextEditors: [] as unknown[],
+};
 export const languages = {};
-export const commands = {};
+export const commands = {
+  executeCommand: async <T>(_cmd: string, ..._args: unknown[]): Promise<T> => {
+    throw new Error("executeCommand stub — inject a runner in your test");
+  },
+};
+export const extensions = {
+  getExtension: (_id: string) => null,
+};
 export const InlineCompletionTriggerKind = { Invoke: 0, Automatic: 1 };
 
 export class StatusBarAlignment {}
