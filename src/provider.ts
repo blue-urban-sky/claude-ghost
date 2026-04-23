@@ -16,15 +16,43 @@ export interface PendingCompletion {
   remaining: string;
 }
 
+export interface ProviderOverrides {
+  visible?: boolean;
+  recent?: boolean;
+  symbols?: boolean;
+  diff?: boolean;
+}
+
 export interface NextTriggerOpts {
   hint?: string;
   maximalist?: boolean;
   session?: ClaudeSession;
+  providerOverrides?: ProviderOverrides;
+  forceRegenerate?: boolean;
 }
 
 interface InflightEntry {
   abort: AbortController;
   promise: Promise<void>;
+  promptHash: number;
+  startedAt: number;
+  getCollected: () => string;
+}
+
+// Cheap djb2 hash on length + first 128 chars + last 128 chars of the prompt.
+// Used to dedup a double-trigger onto an in-flight request. This is not a
+// security primitive — collisions are harmless (worst case we dedup when we
+// shouldn't, and the user just re-triggers). Exported for tests.
+export function promptHash(prompt: string): number {
+  const len = prompt.length;
+  const head = prompt.slice(0, 128);
+  const tail = len > 128 ? prompt.slice(len - 128) : "";
+  const material = `${len}:${head}:${tail}`;
+  let h = 5381;
+  for (let i = 0; i < material.length; i++) {
+    h = ((h << 5) + h + material.charCodeAt(i)) | 0;
+  }
+  return h;
 }
 
 export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider {
@@ -33,6 +61,8 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
   #nextHint: string | null = null;
   #nextMaximalist = false;
   #nextSession: ClaudeSession | null = null;
+  #nextProviderOverrides: ProviderOverrides | null = null;
+  #nextForceRegenerate = false;
   #pending: PendingCompletion | null = null;
   // Monotonic counter used by the post-return watchdog to detect pendings
   // that were installed but never touched (accepted / cleared / moved). A
@@ -67,6 +97,14 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     if (opts.hint !== undefined) this.#nextHint = opts.hint;
     if (opts.maximalist) this.#nextMaximalist = true;
     if (opts.session) this.#nextSession = opts.session;
+    if (opts.providerOverrides !== undefined) this.#nextProviderOverrides = opts.providerOverrides;
+    if (opts.forceRegenerate) this.#nextForceRegenerate = true;
+  }
+
+  consumeNextProviderOverrides(): ProviderOverrides | null {
+    const v = this.#nextProviderOverrides;
+    this.#nextProviderOverrides = null;
+    return v;
   }
 
   clearPending(reason: string): void {
@@ -166,9 +204,11 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
         `note: entering with an existing pending (age=${age}ms, remaining.len=${this.#pending.remaining.length}) — will be superseded`,
       );
     }
-    if (this.#nextHint || this.#nextMaximalist || this.#nextSession) {
+    const forceRegenerate = this.#nextForceRegenerate;
+    this.#nextForceRegenerate = false;
+    if (this.#nextHint || this.#nextMaximalist || this.#nextSession || forceRegenerate) {
       this.#log(
-        `carried-over trigger opts: hint=${this.#nextHint ? JSON.stringify(this.#nextHint.slice(0, 40)) : "-"}, maximalist=${this.#nextMaximalist}, sessionOverride=${this.#nextSession ? "yes" : "no"}`,
+        `carried-over trigger opts: hint=${this.#nextHint ? JSON.stringify(this.#nextHint.slice(0, 40)) : "-"}, maximalist=${this.#nextMaximalist}, sessionOverride=${this.#nextSession ? "yes" : "no"}, forceRegenerate=${forceRegenerate}`,
       );
     }
     const currentLine = document.lineAt(position.line);
@@ -188,10 +228,64 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       return undefined;
     }
 
+    // Build the prompt up front so we can hash it for in-flight dedup before
+    // deciding whether to abort any prior inflight.
+    const hint = this.#nextHint;
+    this.#nextHint = null;
+    const useMaximalist = this.#nextMaximalist;
+    this.#nextMaximalist = false;
+    let maximalist: { task: string } | undefined;
+    if (useMaximalist) {
+      const task = findNearbyComment(document, position);
+      if (!task) {
+        this.#log("maximalist requested but no nearby comment found — falling back to regular completion");
+        void vscode.window.showWarningMessage("Claude Ghost: maximalist mode needs a nearby comment describing what to build.");
+      } else {
+        maximalist = { task };
+        this.#log(`maximalist task: ${JSON.stringify(task)}`);
+      }
+    }
+    const prompt = buildPrompt(document, position, {
+      contextMaxBytes: cfg.get<number>(CFG.contextMaxBytes, 100000),
+      contextLines: cfg.get<number>(CFG.contextLines, 100),
+      hint: hint ?? undefined,
+      maximalist,
+    });
+    const maxChars = cfg.get<number>(CFG.maxChars, -1);
+    this.#log(`prompt built (${prompt.length} chars${maximalist ? ", maximalist" : ""}${hint ? `, hint=${JSON.stringify(hint)}` : ""})`);
+    const newPromptHash = promptHash(prompt);
+
+    // Debounced in-flight dedup: identical prompts fired within 300 ms share
+    // the in-flight result instead of aborting and restarting. Force-regenerate
+    // (item 9a) always bypasses dedup.
+    if (this.#inflight && !forceRegenerate) {
+      const age = Date.now() - this.#inflight.startedAt;
+      if (this.#inflight.promptHash === newPromptHash && age < 300) {
+        this.#log(`trigger deduped to in-flight (age=${age}ms)`);
+        const dedupInflight = this.#inflight;
+        try {
+          await dedupInflight.promise;
+        } catch {
+          // ignored — the original caller owns reporting
+        }
+        if (token.isCancellationRequested) {
+          this.#log("dedup: token cancelled after awaiting in-flight");
+          return undefined;
+        }
+        const collected = dedupInflight.getCollected();
+        const cleaned = cleanCompletion(collected);
+        if (!cleaned.trim()) {
+          this.#log(`dedup: in-flight produced empty result (raw=${collected.length} chars)`);
+          return undefined;
+        }
+        return this.#installPending(document, position, cleaned, before, after, entryVersion);
+      }
+    }
+
     // Drop-old/start-new: cancel any prior inflight immediately rather than
     // waiting FIFO-style. The old call's for-await handles cancellation.
     if (this.#inflight) {
-      this.#log("aborting prior inflight");
+      this.#log(forceRegenerate ? "force-regenerate: aborting prior inflight" : "aborting prior inflight");
       this.#inflight.abort.abort();
       if (session.state === "generating") {
         try {
@@ -224,30 +318,6 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     }
 
     this.clearPending("superseded");
-
-    const hint = this.#nextHint;
-    this.#nextHint = null;
-    const useMaximalist = this.#nextMaximalist;
-    this.#nextMaximalist = false;
-    let maximalist: { task: string } | undefined;
-    if (useMaximalist) {
-      const task = findNearbyComment(document, position);
-      if (!task) {
-        this.#log("maximalist requested but no nearby comment found — falling back to regular completion");
-        void vscode.window.showWarningMessage("Claude Ghost: maximalist mode needs a nearby comment describing what to build.");
-      } else {
-        maximalist = { task };
-        this.#log(`maximalist task: ${JSON.stringify(task)}`);
-      }
-    }
-    const prompt = buildPrompt(document, position, {
-      contextMaxBytes: cfg.get<number>(CFG.contextMaxBytes, 100000),
-      contextLines: cfg.get<number>(CFG.contextLines, 100),
-      hint: hint ?? undefined,
-      maximalist,
-    });
-    const maxChars = cfg.get<number>(CFG.maxChars, -1);
-    this.#log(`prompt built (${prompt.length} chars${maximalist ? ", maximalist" : ""}${hint ? `, hint=${JSON.stringify(hint)}` : ""})`);
 
     let collected = "";
     let cancelled = false;
@@ -312,7 +382,13 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       }
     })();
 
-    this.#inflight = { abort, promise: work };
+    this.#inflight = {
+      abort,
+      promise: work,
+      promptHash: newPromptHash,
+      startedAt,
+      getCollected: () => collected,
+    };
     try {
       await work;
     } finally {
@@ -359,6 +435,17 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       `completion (${cleaned.length} chars, ttft=${ttftMs}ms, total=${totalMs}ms) preview=${JSON.stringify(preview)}`,
     );
 
+    return this.#installPending(document, position, cleaned, before, after, entryVersion);
+  }
+
+  #installPending(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    cleaned: string,
+    before: string,
+    after: string,
+    entryVersion: number,
+  ): vscode.InlineCompletionItem[] {
     // Pre-return sanity: if the document changed or the position drifted while
     // we were awaiting the model, VS Code will silently refuse to render the
     // item — the range we compute references stale coordinates. Log aggressively
