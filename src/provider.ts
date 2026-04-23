@@ -7,6 +7,7 @@ import {
   findNearbyComment,
 } from "./prompt";
 import { assembleExtraContext } from "./context";
+import { startProgressIndicator, type ProgressIndicator } from "./progressIndicator";
 import { CFG } from "./state";
 
 type Log = (msg: string) => void;
@@ -398,8 +399,30 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
 
     const abort = new AbortController();
     // Tie VS Code cancellation into our AbortSignal so all cleanup
-    // (heartbeat, inflight tracking) listens to a single source of truth.
+    // (heartbeat, progress indicator, inflight tracking) listens to a single
+    // source of truth.
     const tokenSub = token.onCancellationRequested(() => abort.abort());
+
+    // Optional in-editor progress indicator: braille spinner decoration at
+    // the end of the cursor line, cycles while the model is generating. Kept
+    // off by default would be tempting, but the whole UX complaint is "I
+    // can't tell if it's working" — so default is on. Setting lets users
+    // silence it.
+    let progress: ProgressIndicator | null = null;
+    const showProgress = cfg.get<boolean>(CFG.showProgressIndicator, true);
+    const progressEditor = vscode.window.activeTextEditor;
+    if (
+      showProgress &&
+      progressEditor &&
+      progressEditor.document.uri.toString() === document.uri.toString()
+    ) {
+      try {
+        progress = startProgressIndicator(progressEditor, position.line);
+      } catch {
+        // Decoration creation can fail on disposed editors; non-fatal.
+        progress = null;
+      }
+    }
 
     // Heartbeat runs until the finally-block clears it; the inner guard just
     // skips logging once we've aborted so we don't spam the channel.
@@ -463,6 +486,7 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       await work;
     } finally {
       clearInterval(heartbeat);
+      if (progress) progress.stop();
       if (this.#inflight && this.#inflight.promise === work) {
         this.#inflight = null;
       }

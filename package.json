@@ -2,7 +2,7 @@
   "name": "claude-ghost",
   "displayName": "Claude Ghost",
   "description": "Inline ghost-text completions powered by the local Claude CLI.",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "publisher": "sam-lyon",
   "license": "MIT",
   "repository": {
@@ -213,6 +213,11 @@
           "type": "boolean",
           "default": true,
           "description": "When the cursor sits right after an accessor (., ->, ::), pull the receiver's type via LSP hover and include it in the prompt."
+        },
+        "claude-ghost.showProgressIndicator": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a small braille spinner at the end of the cursor line while a completion is generating. Disable if the decoration feels noisy."
         }
       }
     }

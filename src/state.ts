@@ -23,6 +23,7 @@ export const CFG = {
   symbolResolutionMaxFiles: "symbolResolutionMaxFiles",
   useGitDiff: "useGitDiff",
   useTypeInfo: "useTypeInfo",
+  showProgressIndicator: "showProgressIndicator",
 } as const;
 
 // Settings keys that require respawning the child CLI. Changing these

@@ -77,6 +77,10 @@ export const workspace = {
 };
 export const window = {
   visibleTextEditors: [] as unknown[],
+  activeTextEditor: undefined as unknown,
+  createTextEditorDecorationType: (_opts: unknown) => ({
+    dispose: () => undefined,
+  }),
 };
 export const languages = {};
 export const commands = {

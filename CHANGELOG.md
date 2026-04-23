@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.2] - 2026-04-23
+
+### Added
+- In-editor progress indicator: a small braille spinner (`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`) decorates the end of the cursor line while a completion is generating, so there's a visible "working…" signal where the user is looking instead of only in the status bar. Toggle via `claude-ghost.showProgressIndicator` (default on).
+
 ## [1.1.1] - 2026-04-23
 
 ### Fixed
