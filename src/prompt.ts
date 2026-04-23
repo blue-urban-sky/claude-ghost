@@ -207,6 +207,20 @@ const META_COMMENTARY = [
   "truncated",
 ];
 
+// Longest suffix of `completion` that equals a prefix of `after`. Used by the
+// provider to size the replacement range: if the model re-emits characters
+// that already exist right of the cursor (common: trailing `)`, `}`, `;`),
+// the range covers that exact overlap so accepting the ghost doesn't
+// duplicate them. When overlap is 0 we end up with a pure insertion at the
+// cursor — which is what mid-line completions need to render at all.
+export function completionOverlap(completion: string, after: string): number {
+  const max = Math.min(completion.length, after.length);
+  for (let n = max; n > 0; n--) {
+    if (completion.endsWith(after.slice(0, n))) return n;
+  }
+  return 0;
+}
+
 export function cleanCompletion(raw: string): string {
   let out = raw;
   // Strip leaked input scaffolding (both vanilla and nonce-suffixed forms).

@@ -1,6 +1,11 @@
 import * as vscode from "vscode";
 import { ClaudeSession } from "./session";
-import { buildPrompt, cleanCompletion, findNearbyComment } from "./prompt";
+import {
+  buildPrompt,
+  cleanCompletion,
+  completionOverlap,
+  findNearbyComment,
+} from "./prompt";
 import { CFG } from "./state";
 
 type Log = (msg: string) => void;
@@ -387,20 +392,18 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
         `WARN: line content around cursor drifted — beforeAtEntry=${JSON.stringify(before)} beforeAtReturn=${JSON.stringify(beforeNow)} afterAtEntry=${JSON.stringify(after)} afterAtReturn=${JSON.stringify(afterNow)}`,
       );
     }
-    // Overlap: if the cleaned text starts with what's already right after the
-    // cursor, VS Code's dedup logic suppresses rendering. Log so we can see
-    // this pattern in reports.
-    if (afterNow && cleaned.startsWith(afterNow)) {
-      this.#log(
-        `WARN: completion prefix matches text after cursor — VS Code will likely suppress render (afterNow=${JSON.stringify(afterNow)})`,
-      );
-    }
-
     this.#lastCompletion = cleaned;
-    // Replace through end of current line so the ghost text doesn't collide
-    // with characters already after the cursor (VS Code suppresses rendering
-    // when the suggestion prefix matches existing text).
-    const range = new vscode.Range(position, currentLine.range.end);
+    // Size the replacement range to exactly cover the overlap (if any) between
+    // the tail of `cleaned` and the head of `afterNow`. Historically we replaced
+    // through end-of-line unconditionally — fine when the cursor was at EOL,
+    // but a bug when it wasn't: VS Code silently refuses to render a ghost that
+    // would obliterate unrelated text further along the line. With 0 overlap
+    // the range is empty (pure insertion), which is what mid-line completions
+    // need to render at all.
+    const overlap = completionOverlap(cleaned, afterNow);
+    const rangeEndOffset = document.offsetAt(position) + overlap;
+    const rangeEnd = document.positionAt(rangeEndOffset);
+    const range = new vscode.Range(position, rangeEnd);
     this.#pending = {
       document,
       offset: document.offsetAt(position),
@@ -409,9 +412,8 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     this.#pendingInstalledAt = Date.now();
     const mySerial = ++this.#pendingSerial;
 
-    const rangeReplaces = document.offsetAt(range.end) - document.offsetAt(position);
     this.#log(
-      `returning 1 inline completion item (cleaned.length=${cleaned.length}, range=[${position.line}:${position.character}..${range.end.line}:${range.end.character}], replacesChars=${rangeReplaces})`,
+      `returning 1 inline completion item (cleaned.length=${cleaned.length}, range=[${position.line}:${position.character}..${range.end.line}:${range.end.character}], overlapChars=${overlap}, afterNow.len=${afterNow.length})`,
     );
 
     // Post-return watchdog: if nothing touches this pending within 3 s (no

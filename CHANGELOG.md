@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.2] - 2026-04-23
+
+### Fixed
+- Mid-line completions now render. The provider previously set the accept-range from cursor to end-of-line unconditionally. That works for cursor-at-EOL but tells VS Code the ghost would delete everything to the right of the cursor — so VS Code silently refused to render for any mid-line trigger (e.g. typing inside a generic bound like `extends ▸>(fields: T)…`). The range is now sized to the exact character overlap between the completion's tail and the text right of the cursor (0 overlap → pure insertion, 1 char overlap for classic auto-closed `)` cases, full-tail overlap when the model re-emits the rest of the line). Behaviour on new-line / EOL triggers is unchanged.
+
+### Added
+- `completionOverlap(completion, after)` helper in `src/prompt.ts` with 8 unit tests covering the regression cases.
+- Return-log now includes `overlapChars` and `afterNow.len` so the diagnostic output confirms the computed range at a glance.
+
 ## [1.0.1] - 2026-04-23
 
 ### Fixed

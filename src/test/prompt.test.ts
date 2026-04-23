@@ -1,7 +1,54 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { cleanCompletion, commentMarkerFor, buildPrompt, findNearbyComment } from "../prompt";
+import {
+  cleanCompletion,
+  commentMarkerFor,
+  buildPrompt,
+  completionOverlap,
+  findNearbyComment,
+} from "../prompt";
 import { FakeTextDocument, Position } from "./vscodeStub";
+
+// completionOverlap ----------------------------------------------------------
+
+test("completionOverlap: no overlap when completion doesn't echo any trailing text", () => {
+  // Mongo-helpers case: cursor sits between `extends ` and `>(fields: T)…`;
+  // completion is `"Document"`. No tail of completion matches head of after.
+  assert.equal(completionOverlap("Document", ">(fields: T): { $set }"), 0);
+});
+
+test("completionOverlap: single trailing paren echo", () => {
+  // Classic `foo(` case — editor auto-inserts `)`, completion re-emits it.
+  assert.equal(completionOverlap("bar)", ")"), 1);
+});
+
+test("completionOverlap: multi-char tail match", () => {
+  assert.equal(completionOverlap("return done;", "done;"), 5);
+});
+
+test("completionOverlap: full after-content match", () => {
+  assert.equal(completionOverlap("foo bar baz", " baz"), 4);
+});
+
+test("completionOverlap: empty after yields 0", () => {
+  assert.equal(completionOverlap("anything", ""), 0);
+});
+
+test("completionOverlap: empty completion yields 0", () => {
+  assert.equal(completionOverlap("", "xyz"), 0);
+});
+
+test("completionOverlap: prefers longest suffix that matches a prefix of after", () => {
+  // "aba" ends with "aba", "ba", "a". After starts with "a". Expect 1.
+  assert.equal(completionOverlap("aba", "a"), 1);
+  // After starts with "ab". Tail "ab" of "aab" matches. Expect 2.
+  assert.equal(completionOverlap("aab", "ab"), 2);
+});
+
+test("completionOverlap: does not match interior", () => {
+  // "xyz" in middle of completion shouldn't count.
+  assert.equal(completionOverlap("foo xyz bar", "xyz"), 0);
+});
 
 // cleanCompletion ------------------------------------------------------------
 
