@@ -8,9 +8,7 @@ Claude Ghost is single-purpose by design: warm claude subprocess, fill-in-the-mi
 
 This document tracks planned enhancements in three tiers. Each item is independently shippable. Tier ordering is by ROI — do Tier 1 in order, then stop and reassess.
 
-Blocker before any new feature work: watch the v1.0.1 watchdog logs from the test user. The WARN: 3 s after return, pending is still installed with no lifecycle event line will either (a) confirm the ghost-suppression cause so we can fix it, or (b) not fire — indicating VS Code's render path is fine and the issue was elsewhere. Shipping new features on top of an unresolved silent-failure compounds confusion.
-
-- v1.0.1 watchdog logs reviewed; ghost-suppression cause either fixed or ruled out
+Blocker — RESOLVED in v1.0.2. Root cause was not the VS Code render path; it was a range-calculation bug in the provider. Before v1.0.2, the accept-range was set from cursor to end-of-line unconditionally. Fine for EOL triggers (empty range = pure insertion) but broken for mid-line triggers — VS Code silently refused to render any ghost that would obliterate unrelated text further along the line. Fixed by sizing the range to the exact overlap between the completion's tail and the head of after-cursor text. See CHANGELOG.md [1.0.2] and src/prompt.ts::completionOverlap.
 
  ---
 Tier 1 — high ROI, fits the single-purpose remit
@@ -48,8 +46,9 @@ If the user has a non-empty selection when they trigger, treat it as an implicit
 Current SYSTEM_PROMPT is one-size-fits-all. A dispatch on document.languageId with small nudges (e.g. "Python: no semicolons, preserve import order", "Rust: don't reintroduce use lines already present") cuts low-grade formatting mistakes. Stop sequences (fence close, blank-line after block) trim wasted tokens and lower TTFT.
 
 - Export languageStyleFor(languageId: string): string from src/prompt.ts
-- Starter language set: typescript, typescriptreact, javascript, javascriptreact, python, go, rust, shellscript; fallback returns empty
+- Starter language set, informed by a survey of the user's primary monorepo (inshur-platform): python (9.7k files), java (5.1k), typescript + typescriptreact (3.8k), go (1.9k), javascript + javascriptreact (0.6k), shellscript (0.3k), terraform (0.3k), kotlin (0.2k). Fallback returns empty. Rust dropped from the set — zero usage in the target workspace.
 - Per-language nudge content — keep each under ~200 chars
+- Java/Kotlin note: these are Spring-Boot heavy in the target repo; nudges should reflect that (e.g. "Kotlin: prefer val, avoid !!, use safe calls ?.", "Java: honour package-info.java if present, don't reintroduce wildcard imports")
 - Decision: system prompt is fixed at session-spawn (warm session), so emit the language nudge as a compact <style> tag inside each prompt rather than spawning per-language sessions
 - buildPrompt accepts languageId, embeds the nudge after extra context and before the cursor file
 - src/provider.ts passes document.languageId through
@@ -102,10 +101,23 @@ Explicit ContextBuilder abstraction with pluggable providers (CurrentFile, Visib
 - Log line: context assembled: {currentFile=Nk, visible=Nk, recent=Nk, hover=Nk, imports=Nk, diff=Nk} total=Nk/Mk
 - Setting claude-ghost.contextProviders: string[] to enable/disable individual providers
 
+8. Workspace-guideline auto-ingestion
+
+Many repos already document their conventions — the target monorepo (inshur-platform) has docs/guidelines/{kotlin,java,typescript,nodejs,golang,spring,react,infrastructure}.md, plus a CLAUDE.md at the app root. Auto-ingesting the relevant file for the current language turns existing engineering documentation into free, per-project language nudges. No manual maintenance, consistently aligned with what engineers are already trained on.
+
+- Lookup order per completion: (1) <workspaceRoot>/CLAUDE.md, (2) <workspaceRoot>/docs/guidelines/<languageId-alias>.md, (3) nearest CLAUDE.md walking up from the current file
+- Aliases: typescript → typescript.md, kotlin → kotlin.md, java → java.md, etc. Pluralise where repos use plural naming
+- Cap each injected snippet at ~1 500 chars (head of the file); strip Markdown frontmatter
+- Cache per-workspace on load; invalidate on document change within the guidelines directory
+- Embed as <project-guidelines source="…">…</project-guidelines> block, placed BEFORE the language nudge so the project's rules take precedence over generic ones
+- Setting claude-ghost.useWorkspaceGuidelines: boolean (default true)
+- Setting claude-ghost.workspaceGuidelinesPath: string (default "docs/guidelines") to support repos that put them elsewhere
+- Slots into the ContextBuilder abstraction from item 7 as a dedicated provider
+
  ---
 Tier 3 — UX / operational
 
-8. "Regenerate" command
+9. "Regenerate" command
 
 One keystroke to discard and re-roll the last completion (optionally with a "try again, different approach" nudge). Today the user has to dismiss + retrigger.
 
@@ -115,7 +127,7 @@ One keystroke to discard and re-roll the last completion (optionally with a "try
 - Log line: regenerate (previous len=N)
 - Verify it plays nicely with #inflight abort — the old in-flight is cancelled before the new one starts
 
-9. Local metrics
+10. Local metrics
 
 ~/.claude-ghost/metrics.jsonl: completions, accepts, partials, declines, TTFT, decline reasons. No upload; just a personal file you can jq against. Helps tune model/effort empirically.
 
@@ -125,7 +137,7 @@ One keystroke to discard and re-roll the last completion (optionally with a "try
 - Command claude-ghost.showMetricsSummary — quick-pick style summary for the last 24 h / 7 d
 - Document the schema in README so users know what's captured
 
-10. Prompt-caching discipline
+11. Prompt-caching discipline
 
 Restructure buildPrompt so the stable prefix (system + imports + neighbouring files) comes first and the volatile cursor-region comes last. Claude's prompt cache then hits 95 %+ on repeated triggers in the same file.
 
@@ -134,7 +146,7 @@ Restructure buildPrompt so the stable prefix (system + imports + neighbouring fi
 - Verify cache hits in practice by inspecting result message cache fields in the session JSONL
 - Log line: cache-hit ratio per completion when visible in the CLI response
 
-11. Debounced in-flight dedup
+12. Debounced in-flight dedup
 
 If two identical prompts fire within 300 ms (common when the user double-triggers), return the in-flight result instead of interrupting and restarting.
 
@@ -169,12 +181,12 @@ For every shipped piece: npm run compile && npm test && make package, then hand 
  ---
 Order of operations
 
-1. Resolve the v1.0.1 ghost-suppression bug first (see blocker above)
+1. DONE — ghost-suppression bug resolved in v1.0.2
 2. Ship Tier 1 item 3 (language-aware prompts) — smallest surface, lowest risk → patch release
 3. Ship Tier 1 item 2 (selection-as-hint) — trivial → patch release
 4. Ship Tier 1 item 1 (visible/recent context) — introduces ContextBuilder seam → 1.1.0
 5. Ship Tier 1 item 4 (hover type info) → 1.2.0
-6. Reassess — Tier 2 worth it? Or are completions good enough?
+6. Reassess — Tier 2 worth it? Or are completions good enough? Tier 2 item 8 (workspace-guideline ingestion) is the strongest candidate for the inshur-platform user; consider jumping to it ahead of items 5–7 if manual nudges from item 3 feel too coarse.
 
 Critical files for Tier 1 work
 
