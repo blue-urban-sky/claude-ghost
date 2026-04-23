@@ -6,6 +6,7 @@ import {
   buildPrompt,
   completionOverlap,
   findNearbyComment,
+  languageStyleFor,
 } from "../prompt";
 import { FakeTextDocument, Position } from "./vscodeStub";
 
@@ -190,4 +191,135 @@ test("findNearbyComment returns null when cursor too far from comment", () => {
   const doc = new FakeTextDocument("typescript", "/tmp/a.ts", body);
   const task = findNearbyComment(doc as any, new Position(20, 0) as any);
   assert.equal(task, null);
+});
+
+// languageStyleFor ----------------------------------------------------------
+
+test("languageStyleFor: typescript returns non-empty", () => {
+  assert.ok(languageStyleFor("typescript").length > 0);
+});
+
+test("languageStyleFor: typescriptreact returns non-empty", () => {
+  assert.ok(languageStyleFor("typescriptreact").length > 0);
+});
+
+test("languageStyleFor: javascript returns non-empty", () => {
+  assert.ok(languageStyleFor("javascript").length > 0);
+});
+
+test("languageStyleFor: javascriptreact returns non-empty", () => {
+  assert.ok(languageStyleFor("javascriptreact").length > 0);
+});
+
+test("languageStyleFor: python returns non-empty", () => {
+  assert.ok(languageStyleFor("python").length > 0);
+});
+
+test("languageStyleFor: java returns non-empty", () => {
+  assert.ok(languageStyleFor("java").length > 0);
+});
+
+test("languageStyleFor: kotlin returns non-empty", () => {
+  assert.ok(languageStyleFor("kotlin").length > 0);
+});
+
+test("languageStyleFor: go returns non-empty", () => {
+  assert.ok(languageStyleFor("go").length > 0);
+});
+
+test("languageStyleFor: shellscript returns non-empty", () => {
+  assert.ok(languageStyleFor("shellscript").length > 0);
+});
+
+test("languageStyleFor: terraform returns non-empty", () => {
+  assert.ok(languageStyleFor("terraform").length > 0);
+});
+
+test("languageStyleFor: unknown languageId returns empty string", () => {
+  assert.equal(languageStyleFor("somethingweird"), "");
+});
+
+// buildPrompt — style block --------------------------------------------------
+
+test("buildPrompt includes <style lang=\"typescript\"> when languageId is typescript", () => {
+  const doc = new FakeTextDocument("typescript", "/tmp/a.ts", "x");
+  const prompt = buildPrompt(doc as any, new Position(0, 1) as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+    languageId: "typescript",
+  });
+  assert.ok(/<style lang="typescript">[^<]+<\/style>/.test(prompt));
+});
+
+test("buildPrompt omits <style> block when languageId is unknown", () => {
+  const doc = new FakeTextDocument("typescript", "/tmp/a.ts", "x");
+  const prompt = buildPrompt(doc as any, new Position(0, 1) as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+    languageId: "whatever",
+  });
+  assert.ok(!prompt.includes("<style"));
+});
+
+// buildPrompt — extraContext -------------------------------------------------
+
+test("buildPrompt renders extraContext chunks with proper nonce-escaped boundaries", () => {
+  const doc = new FakeTextDocument("typescript", "/tmp/a.ts", "const x = 1;");
+  const prompt = buildPrompt(doc as any, new Position(0, 12) as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+    extraContext: [
+      {
+        source: "visible",
+        label: "other.ts",
+        language: "typescript",
+        text: "export const helper = () => 42;",
+      },
+    ],
+  });
+  // The extra chunk uses the same per-request nonce and role="context".
+  const match = prompt.match(/<file-([a-f0-9]+) name="other\.ts" language="typescript" role="context">\nexport const helper = \(\) => 42;\n<\/file-\1>/);
+  assert.ok(match, `expected extra context file envelope, got: ${prompt}`);
+  // Ensure the current file envelope uses the same nonce.
+  assert.ok(prompt.includes(`<file-${match![1]} name="a.ts" language="typescript">`));
+});
+
+test("buildPrompt with empty extraContext is identical to without the param", () => {
+  const doc = new FakeTextDocument("typescript", "/tmp/a.ts", "const x = 1;");
+  // The nonce is random per-call, so comparing whole strings is flaky. Instead
+  // check that the extra-chunk envelope never appears and structure matches.
+  const promptA = buildPrompt(doc as any, new Position(0, 12) as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+  });
+  const promptB = buildPrompt(doc as any, new Position(0, 12) as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+    extraContext: [],
+  });
+  // Neither output should include a context-role file envelope.
+  assert.ok(!promptA.includes("role=\"context\""));
+  assert.ok(!promptB.includes("role=\"context\""));
+  // Strip nonce and compare structure.
+  const stripNonce = (s: string) => s.replace(/-[a-f0-9]{8}/g, "-NONCE");
+  assert.equal(stripNonce(promptA), stripNonce(promptB));
+});
+
+test("buildPrompt neutralises <file and nonce leakage in extraContext text", () => {
+  const doc = new FakeTextDocument("typescript", "/tmp/a.ts", "x");
+  const prompt = buildPrompt(doc as any, new Position(0, 1) as any, {
+    contextMaxBytes: 1024,
+    contextLines: 10,
+    extraContext: [
+      {
+        source: "visible",
+        label: "hostile.ts",
+        language: "typescript",
+        text: "«CURSOR» leaked",
+      },
+    ],
+  });
+  // Exactly one raw cursor marker: the real one in the current file.
+  const matches = prompt.match(/«CURSOR»/g) ?? [];
+  assert.equal(matches.length, 1, `expected 1 raw cursor marker, got ${matches.length} in: ${prompt}`);
 });
