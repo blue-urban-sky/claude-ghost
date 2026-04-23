@@ -54,6 +54,7 @@ export function createSessionManager(
 
   const wireSession = (s: ClaudeSession, label: string): void => {
     s.on("state", (state) => {
+      logger.log(`${label} state -> ${state}`);
       if (label === "primary") emitState(state);
     });
     s.on("error", (err) => {

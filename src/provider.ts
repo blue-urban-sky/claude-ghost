@@ -29,6 +29,13 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
   #nextMaximalist = false;
   #nextSession: ClaudeSession | null = null;
   #pending: PendingCompletion | null = null;
+  // Monotonic counter used by the post-return watchdog to detect pendings
+  // that were installed but never touched (accepted / cleared / moved). A
+  // stale pending 3 s after return is a strong signal VS Code silently
+  // dropped the ghost text render (common causes: doc changed mid-await,
+  // overlap with text after cursor, inline-suggest disabled editor-wide).
+  #pendingSerial = 0;
+  #pendingInstalledAt = 0;
   readonly #getSession: () => ClaudeSession | null;
   readonly #log: Log;
   readonly #onPendingCleared: (reason: string) => void;
@@ -59,7 +66,10 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
 
   clearPending(reason: string): void {
     if (!this.#pending) return;
+    const age = Date.now() - this.#pendingInstalledAt;
+    this.#pendingSerial++;
     this.#pending = null;
+    this.#log(`pending cleared (reason=${reason}, age=${age}ms)`);
     this.#onPendingCleared(reason);
   }
 
@@ -74,7 +84,7 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     if (event.contentChanges.length === 0) return null;
     const change = event.contentChanges[0];
     if (change.rangeOffset !== pending.offset) {
-      this.clearPending("edited elsewhere");
+      this.clearPending(`edited elsewhere (change@${change.rangeOffset}, pending@${pending.offset})`);
       return null;
     }
     if (change.text.length === 0) {
@@ -82,12 +92,15 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       return null;
     }
     if (!pending.remaining.startsWith(change.text)) {
-      this.clearPending("typed non-matching text");
+      this.clearPending(
+        `typed non-matching text (typed=${JSON.stringify(change.text.slice(0, 40))}, expected=${JSON.stringify(pending.remaining.slice(0, 40))})`,
+      );
       return null;
     }
     const accepted = change.text;
     const remaining = pending.remaining.slice(accepted.length);
     if (remaining.length === 0) {
+      this.#pendingSerial++;
       this.#pending = null;
       return { accepted, full: true };
     }
@@ -129,9 +142,30 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     ) {
       return undefined;
     }
+    const entryVersion = document.version;
+    const entryUri = document.uri.toString();
+    const activeEditor = vscode.window.activeTextEditor;
+    const activeMatch = activeEditor?.document.uri.toString() === entryUri;
+    const inlineEnabled = vscode.workspace
+      .getConfiguration("editor")
+      .get<boolean>("inlineSuggest.enabled", true);
     this.#log(
-      `invoked (file=${document.fileName.split(/[\\/]/).pop()} line=${position.line} col=${position.character}, kind=${context.triggerKind})`,
+      `invoked (file=${document.fileName.split(/[\\/]/).pop()} line=${position.line} col=${position.character}, kind=${context.triggerKind}, version=${entryVersion}, activeMatch=${activeMatch}, inlineEnabled=${inlineEnabled}, selectedCompletion=${context.selectedCompletionInfo ? JSON.stringify(context.selectedCompletionInfo.text.slice(0, 40)) : "none"})`,
     );
+    if (!inlineEnabled) {
+      this.#log("WARN: editor.inlineSuggest.enabled is false — VS Code will not render any ghost text regardless of what we return");
+    }
+    if (this.#pending) {
+      const age = Date.now() - this.#pendingInstalledAt;
+      this.#log(
+        `note: entering with an existing pending (age=${age}ms, remaining.len=${this.#pending.remaining.length}) — will be superseded`,
+      );
+    }
+    if (this.#nextHint || this.#nextMaximalist || this.#nextSession) {
+      this.#log(
+        `carried-over trigger opts: hint=${this.#nextHint ? JSON.stringify(this.#nextHint.slice(0, 40)) : "-"}, maximalist=${this.#nextMaximalist}, sessionOverride=${this.#nextSession ? "yes" : "no"}`,
+      );
+    }
     const currentLine = document.lineAt(position.line);
     const before = currentLine.text.slice(0, position.character);
     const after = currentLine.text.slice(position.character);
@@ -141,8 +175,11 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     const overrideSession = this.#nextSession;
     this.#nextSession = null;
     const session = overrideSession ?? this.#getSession();
+    this.#log(
+      `session resolved: ${session ? `id=${session.sessionId} state=${session.state}${overrideSession ? " (override)" : ""}` : "null"}`,
+    );
     if (!session) {
-      this.#log("no session");
+      this.#log("no session — aborting");
       return undefined;
     }
 
@@ -154,8 +191,9 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       if (session.state === "generating") {
         try {
           await session.interrupt();
-        } catch {
-          // ignore
+          this.#log("prior inflight interrupted");
+        } catch (err) {
+          this.#log(`prior-inflight interrupt failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       // Don't await the prior promise here — let it unwind on its own.
@@ -170,8 +208,9 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
       this.#log("session busy — interrupting");
       try {
         await session.interrupt();
-      } catch {
-        // ignore
+        this.#log(`interrupt returned, state now=${session.state}`);
+      } catch (err) {
+        this.#log(`interrupt threw: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     if (session.state !== "ready") {
@@ -314,16 +353,79 @@ export class ClaudeGhostProvider implements vscode.InlineCompletionItemProvider 
     this.#log(
       `completion (${cleaned.length} chars, ttft=${ttftMs}ms, total=${totalMs}ms) preview=${JSON.stringify(preview)}`,
     );
+
+    // Pre-return sanity: if the document changed or the position drifted while
+    // we were awaiting the model, VS Code will silently refuse to render the
+    // item — the range we compute references stale coordinates. Log aggressively
+    // so the exact cause is visible in the output channel.
+    const nowVersion = document.version;
+    const versionChanged = nowVersion !== entryVersion;
+    const lineAtReturn = position.line < document.lineCount
+      ? document.lineAt(position.line)
+      : null;
+    const positionInBounds =
+      lineAtReturn !== null && position.character <= lineAtReturn.text.length;
+    const afterNow = lineAtReturn
+      ? lineAtReturn.text.slice(position.character)
+      : "";
+    const beforeNow = lineAtReturn
+      ? lineAtReturn.text.slice(0, position.character)
+      : "";
+    const contextDrifted = beforeNow !== before || afterNow !== after;
+    if (versionChanged) {
+      this.#log(
+        `WARN: document version changed during completion (entry=${entryVersion}, now=${nowVersion}) — VS Code may refuse to render`,
+      );
+    }
+    if (!positionInBounds) {
+      this.#log(
+        `WARN: cursor position is now out of bounds (line=${position.line}/${document.lineCount}, col=${position.character}, lineLen=${lineAtReturn?.text.length ?? "n/a"}) — VS Code will refuse to render`,
+      );
+    }
+    if (contextDrifted) {
+      this.#log(
+        `WARN: line content around cursor drifted — beforeAtEntry=${JSON.stringify(before)} beforeAtReturn=${JSON.stringify(beforeNow)} afterAtEntry=${JSON.stringify(after)} afterAtReturn=${JSON.stringify(afterNow)}`,
+      );
+    }
+    // Overlap: if the cleaned text starts with what's already right after the
+    // cursor, VS Code's dedup logic suppresses rendering. Log so we can see
+    // this pattern in reports.
+    if (afterNow && cleaned.startsWith(afterNow)) {
+      this.#log(
+        `WARN: completion prefix matches text after cursor — VS Code will likely suppress render (afterNow=${JSON.stringify(afterNow)})`,
+      );
+    }
+
     this.#lastCompletion = cleaned;
+    // Replace through end of current line so the ghost text doesn't collide
+    // with characters already after the cursor (VS Code suppresses rendering
+    // when the suggestion prefix matches existing text).
+    const range = new vscode.Range(position, currentLine.range.end);
     this.#pending = {
       document,
       offset: document.offsetAt(position),
       remaining: cleaned,
     };
-    // Replace through end of current line so the ghost text doesn't collide
-    // with characters already after the cursor (VS Code suppresses rendering
-    // when the suggestion prefix matches existing text).
-    const range = new vscode.Range(position, currentLine.range.end);
+    this.#pendingInstalledAt = Date.now();
+    const mySerial = ++this.#pendingSerial;
+
+    const rangeReplaces = document.offsetAt(range.end) - document.offsetAt(position);
+    this.#log(
+      `returning 1 inline completion item (cleaned.length=${cleaned.length}, range=[${position.line}:${position.character}..${range.end.line}:${range.end.character}], replacesChars=${rangeReplaces})`,
+    );
+
+    // Post-return watchdog: if nothing touches this pending within 3 s (no
+    // accept, no clear, no cursor move, no doc change), the ghost almost
+    // certainly wasn't rendered. Fires once; no-op if the pending was
+    // superseded, accepted, or explicitly cleared.
+    setTimeout(() => {
+      if (this.#pendingSerial !== mySerial) return;
+      if (this.#pending === null) return;
+      this.#log(
+        `WARN: 3 s after return, pending is still installed with no lifecycle event — ghost text likely not rendered by VS Code (file=${document.fileName.split(/[\\/]/).pop()}, len=${cleaned.length}). Check: editor.inlineSuggest.enabled, competing inline-completion providers, or a range mismatch.`,
+      );
+    }, 3000);
+
     return [new vscode.InlineCompletionItem(cleaned, range)];
   }
 }

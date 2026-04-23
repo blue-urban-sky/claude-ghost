@@ -81,11 +81,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (autoTriggerTimer) clearTimeout(autoTriggerTimer);
     autoTriggerTimer = setTimeout(() => {
       autoTriggerTimer = null;
-      if (provider.hasPending) return;
+      if (provider.hasPending) {
+        logger.log("auto-trigger skipped: pending completion already armed");
+        return;
+      }
       const session = sessions.current();
-      if (!session || session.state !== "ready") return;
+      if (!session || session.state !== "ready") {
+        logger.log(`auto-trigger skipped: session state=${session?.state ?? "null"}`);
+        return;
+      }
       const editor = vscode.window.activeTextEditor;
-      if (!editor) return;
+      if (!editor) {
+        logger.log("auto-trigger skipped: no active editor");
+        return;
+      }
+      logger.log("auto-trigger firing");
       void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
     }, delay);
   };

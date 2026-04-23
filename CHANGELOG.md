@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.1] - 2026-04-23
+
+### Fixed
+- Corrected `repository`, `bugs`, and `homepage` URLs in `package.json` to point at `blue-urban-sky/claude-ghost`.
+
+### Added — diagnostic logging
+Instrumentation pass to diagnose reports of ghost text silently stopping after a few minutes of use. Every branch of the completion pipeline is now traceable via the **Claude Ghost** output channel:
+- Entry snapshot: document version, URI, active-editor match, `editor.inlineSuggest.enabled`, carried-over hint/maximalist/session-override state.
+- Session resolution: logs `session resolved: id=… state=…` including overrides.
+- Prior-inflight interrupts logged with the reason they fired / failed.
+- Pre-return sanity check: warns if the document version changed mid-await, if the cursor moved out of bounds, if the line content drifted, or if the cleaned completion's prefix already exists after the cursor (the classic VS Code dedup suppression case).
+- Explicit `returning 1 inline completion item (…, replacesChars=N)` line so the output confirms we actually reached the return.
+- **Post-return watchdog**: 3 s after installing a pending completion, if no lifecycle event (accept / partial-accept / clear / cursor-move / doc-change) has touched it, logs a WARN pointing at the likely causes (inline-suggest disabled, competing providers, range mismatch). This is the direct signal for "logs look fine but nothing appears".
+- Pending-cleared reasons now include offsets and a preview of the non-matching text, not just the generic label.
+- Session state transitions logged (`primary state -> ready` etc.) so we can see exactly when the session flipped.
+- Auto-trigger skips now say why (pending armed, session not ready, no active editor) instead of silently no-op-ing.
+
 ## [1.0.0] - 2026-04-22
 
 First production-ready release. Full hardening pass across security, lifecycle, architecture, and release hygiene.

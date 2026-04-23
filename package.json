@@ -2,17 +2,17 @@
   "name": "claude-ghost",
   "displayName": "Claude Ghost",
   "description": "Inline ghost-text completions powered by the local Claude CLI.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "sam-lyon",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sam-lyon/claude-ghost"
+    "url": "https://github.com/blue-urban-sky/claude-ghost"
   },
   "bugs": {
-    "url": "https://github.com/sam-lyon/claude-ghost/issues"
+    "url": "https://github.com/blue-urban-sky/claude-ghost/issues"
   },
-  "homepage": "https://github.com/sam-lyon/claude-ghost#readme",
+  "homepage": "https://github.com/blue-urban-sky/claude-ghost#readme",
   "keywords": [
     "claude",
     "ai",
